@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Menu, User, Store, LogOut, MapPin, LogIn, Shield } from "lucide-react";
+import { Menu, MapPin, User, LogOut, LogIn, Heart, ShoppingBag } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 
 export function AppMenu() {
@@ -24,6 +24,7 @@ export function AppMenu() {
 
             if (!session) {
                 setLoading(false);
+                setProfile(null);
                 return;
             }
 
@@ -44,8 +45,9 @@ export function AppMenu() {
     const handleLogout = async () => {
         await supabase.auth.signOut();
         setProfile(null);
-        navigate("/auth");
+        navigate("/"); // Continua na home, mas como visitante
         setOpen(false);
+        window.location.reload(); // Recarrega para limpar estados
     };
 
     const navigateTo = (path: string) => {
@@ -56,114 +58,96 @@ export function AppMenu() {
     return (
         <Sheet open={open} onOpenChange={setOpen}>
             <SheetTrigger asChild>
-                <Button variant="secondary" size="icon" className="rounded-full shadow-md bg-white/90 backdrop-blur hover:bg-white">
+                <Button variant="secondary" size="icon" className="rounded-full shadow-md bg-white/90 backdrop-blur hover:bg-white h-10 w-10">
                     <Menu className="w-5 h-5 text-gray-700" />
                 </Button>
             </SheetTrigger>
 
-            <SheetContent side="left" className="w-[300px] sm:w-[350px]">
+            <SheetContent side="left" className="w-[300px] sm:w-[350px] flex flex-col h-full">
                 <SheetHeader className="text-left mb-6">
                     {loading ? (
-                        // Skeleton de carregamento
-                        <div className="flex items-center gap-3">
-                            <div className="h-12 w-12 rounded-full bg-gray-200 animate-pulse" />
-                            <div className="space-y-2">
-                                <div className="h-4 w-32 bg-gray-200 animate-pulse rounded" />
-                                <div className="h-3 w-20 bg-gray-200 animate-pulse rounded" />
-                            </div>
+                        <div className="flex items-center gap-3 animate-pulse">
+                            <div className="h-12 w-12 rounded-full bg-gray-200" />
+                            <div className="h-4 w-32 bg-gray-200 rounded" />
                         </div>
                     ) : profile ? (
-                        // Usuário Logado
-                        <div className="flex items-center gap-3 mb-2">
+                        // --- USUÁRIO LOGADO ---
+                        <div className="flex items-center gap-3">
                             <Avatar className="h-12 w-12 border-2 border-primary/10">
                                 <AvatarImage src={profile.avatar_url} />
                                 <AvatarFallback>{profile.display_name?.substring(0, 2).toUpperCase() || "U"}</AvatarFallback>
                             </Avatar>
                             <div>
-                                <SheetTitle className="text-lg font-bold">{profile.display_name || "Usuário"}</SheetTitle>
-                                <p className="text-xs text-gray-500 capitalize">{profile.role === 'partner' ? 'Parceiro' : (profile.role === 'admin' ? 'Administrador' : 'Explorador')}</p>
+                                <SheetTitle className="text-lg font-bold">{profile.display_name}</SheetTitle>
+                                <p className="text-xs text-gray-500">Membro da Comunidade</p>
                             </div>
                         </div>
                     ) : (
-                        // Visitante
-                        <div className="flex flex-col gap-1">
-                            <SheetTitle className="text-xl font-bold text-primary">Onde Ir?</SheetTitle>
-                            <p className="text-sm text-muted-foreground">Descubra os melhores lugares.</p>
+                        // --- VISITANTE (Sem Login) ---
+                        <div className="flex flex-col gap-2">
+                            <SheetTitle className="text-xl font-bold text-primary">Bem-vindo!</SheetTitle>
+                            <p className="text-sm text-gray-500">Você está navegando como visitante.</p>
+                            <Button
+                                className="w-full mt-2 gap-2 shadow-sm"
+                                onClick={() => navigateTo("/auth")}
+                            >
+                                <LogIn className="w-4 h-4" /> Entrar ou Cadastrar
+                            </Button>
                         </div>
                     )}
                 </SheetHeader>
 
-                <div className="flex flex-col gap-2">
-                    {/* Item visível para todos */}
+                <div className="flex flex-col gap-2 flex-1">
+                    {/* Itens Públicos */}
                     <Button
                         variant={location.pathname === "/" ? "secondary" : "ghost"}
-                        className="justify-start gap-3 h-12 text-base"
+                        className="justify-start gap-3 h-12 text-base font-medium"
                         onClick={() => navigateTo("/")}
                     >
-                        <MapPin className="w-5 h-5" /> Explorar Mapa
+                        <MapPin className="w-5 h-5 text-gray-500" /> Explorar Mapa
                     </Button>
 
+                    {/* Itens que requerem Login (Mas mostramos desabilitados ou com redirecionamento) */}
                     {profile ? (
                         <>
-                            {/* Itens apenas para logados */}
                             <Button
-                                variant={location.pathname === "/profile" ? "secondary" : "ghost"}
-                                className="justify-start gap-3 h-12 text-base"
-                                onClick={() => navigateTo("/profile")}
+                                variant={location.pathname === "/favorites" ? "secondary" : "ghost"}
+                                className="justify-start gap-3 h-12 text-base font-medium"
+                                onClick={() => navigateTo("/favorites")} // Futuro
                             >
-                                <User className="w-5 h-5" /> Meu Perfil
+                                <Heart className="w-5 h-5 text-gray-500" /> Favoritos
                             </Button>
 
-                            {/* Área de Parceiros e Admin */}
-                            {(profile.role === 'partner' || profile.role === 'admin') && (
-                                <>
-                                    <Separator className="my-2" />
-                                    <p className="text-xs font-bold text-gray-400 px-4 uppercase mt-2 mb-1">Área do Parceiro</p>
-
-                                    <Button
-                                        variant={location.pathname === "/dashboard" ? "secondary" : "ghost"}
-                                        className="justify-start gap-3 h-12 text-base text-primary font-medium bg-primary/5 hover:bg-primary/10"
-                                        onClick={() => navigateTo("/dashboard")}
-                                    >
-                                        <Store className="w-5 h-5" /> Gerenciar Restaurante
-                                    </Button>
-
-                                    {/* Item Exclusivo de ADMIN */}
-                                    {profile.role === 'admin' && (
-                                        <Button
-                                            variant={location.pathname === "/access-control" ? "secondary" : "ghost"}
-                                            className="justify-start gap-3 h-12 text-base text-red-600 font-medium bg-red-50 hover:bg-red-100 mt-2"
-                                            onClick={() => navigateTo("/access-control")}
-                                        >
-                                            <Shield className="w-5 h-5" /> Gestão de Acesso
-                                        </Button>
-                                    )}
-                                </>
-                            )}
-
-                            <Separator className="my-2" />
-
                             <Button
-                                variant="ghost"
-                                className="justify-start gap-3 h-12 text-base text-red-500 hover:text-red-600 hover:bg-red-50"
-                                onClick={handleLogout}
+                                variant={location.pathname === "/profile" ? "secondary" : "ghost"}
+                                className="justify-start gap-3 h-12 text-base font-medium"
+                                onClick={() => navigateTo("/profile")}
                             >
-                                <LogOut className="w-5 h-5" /> Sair da Conta
+                                <User className="w-5 h-5 text-gray-500" /> Meus Dados
                             </Button>
                         </>
                     ) : (
-                        <>
-                            {/* Botão de Login para Visitantes */}
-                            <Separator className="my-2" />
-                            <Button
-                                className="justify-start gap-3 h-12 text-base w-full mt-2"
-                                onClick={() => navigateTo("/auth")}
-                            >
-                                <LogIn className="w-5 h-5" /> Entrar ou Cadastrar
-                            </Button>
-                        </>
+                        // Placeholder para incentivar cadastro
+                        <div className="mt-4 p-4 bg-gray-50 rounded-xl border border-dashed border-gray-200">
+                            <p className="text-xs text-gray-500 text-center mb-3">
+                                Crie uma conta para salvar favoritos e fazer pedidos no futuro.
+                            </p>
+                        </div>
                     )}
                 </div>
+
+                {/* Rodapé do Menu */}
+                {profile && (
+                    <div className="mt-auto pt-4 border-t">
+                        <Button
+                            variant="ghost"
+                            className="w-full justify-start gap-3 text-red-500 hover:text-red-600 hover:bg-red-50"
+                            onClick={handleLogout}
+                        >
+                            <LogOut className="w-5 h-5" /> Sair da Conta
+                        </Button>
+                    </div>
+                )}
             </SheetContent>
         </Sheet>
     );
