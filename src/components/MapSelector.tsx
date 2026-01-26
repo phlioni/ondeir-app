@@ -1,62 +1,79 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { GoogleMap, useJsApiLoader, Marker } from "@react-google-maps/api";
-import { cn } from "@/lib/utils";
-import { Loader2, MapPin } from "lucide-react";
+import { GoogleMap, useJsApiLoader, Marker, InfoWindow } from "@react-google-maps/api";
+import { Loader2, Navigation } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
-// Usa a mesma chave de API configurada no .env
 const apiKey = import.meta.env.VITE_GOOGLE_MAPS_KEY || "";
 
-interface MapSelectorProps {
-    onLocationSelect?: (lat: number, lng: number) => void;
-    selectedLocation?: { lat: number; lng: number } | null;
-    className?: string;
-    readOnly?: boolean;
+// Cores dos Pins baseadas na categoria
+const PIN_COLORS: Record<string, string> = {
+    "Bar": "http://maps.google.com/mapfiles/ms/icons/purple-dot.png",
+    "Restaurante": "http://maps.google.com/mapfiles/ms/icons/orange-dot.png",
+    "Balada": "http://maps.google.com/mapfiles/ms/icons/blue-dot.png",
+    "Café": "http://maps.google.com/mapfiles/ms/icons/green-dot.png",
+    "default": "http://maps.google.com/mapfiles/ms/icons/red-dot.png"
+};
+
+interface Location {
+    id: string;
+    lat: number;
+    lng: number;
+    name: string;
+    category: string;
+    cover_image?: string;
+    rating?: number;
 }
 
-export function MapSelector({ onLocationSelect, selectedLocation, className, readOnly = false }: MapSelectorProps) {
+interface MapSelectorProps {
+    markers?: Location[];
+    onMarkerClick?: (id: string) => void;
+    className?: string;
+    centerLocation?: { lat: number; lng: number } | null;
+}
+
+export function MapSelector({ markers = [], onMarkerClick, className, centerLocation }: MapSelectorProps) {
     const { isLoaded, loadError } = useJsApiLoader({
-        id: 'google-map-script', // <--- FIX: Padronizado com o mesmo ID das outras telas
+        id: 'google-map-script',
         googleMapsApiKey: apiKey
     });
 
     const [map, setMap] = useState<google.maps.Map | null>(null);
-    const [center, setCenter] = useState<{ lat: number; lng: number } | null>(null);
+    const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+    const [selectedMarker, setSelectedMarker] = useState<Location | null>(null);
 
-    const hasCenteredRef = useRef(false);
-
+    // 1. Pegar localização EXATA do usuário ao iniciar
     useEffect(() => {
-        if (selectedLocation) {
-            setCenter(selectedLocation);
-            return;
-        }
-
-        if (!hasCenteredRef.current) {
-            if (navigator.geolocation) {
-                navigator.geolocation.getCurrentPosition(
-                    (position) => {
-                        setCenter({
-                            lat: position.coords.latitude,
-                            lng: position.coords.longitude,
-                        });
-                        hasCenteredRef.current = true;
-                    },
-                    () => {
-                        setCenter({ lat: -23.5505, lng: -46.6333 });
-                        hasCenteredRef.current = true;
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const pos = {
+                        lat: position.coords.latitude,
+                        lng: position.coords.longitude,
+                    };
+                    setUserLocation(pos);
+                    // Se não tiver um centro forçado pela IA, usa a localização do usuário
+                    if (!centerLocation && map) {
+                        map.panTo(pos);
+                        map.setZoom(15);
                     }
-                );
-            } else {
-                setCenter({ lat: -23.5505, lng: -46.6333 });
-                hasCenteredRef.current = true;
-            }
+                },
+                (error) => {
+                    console.error("Erro GPS:", error);
+                    // Fallback para SP
+                    setUserLocation({ lat: -23.550520, lng: -46.633308 });
+                },
+                { enableHighAccuracy: true } // MÁXIMA PRECISÃO
+            );
         }
-    }, [selectedLocation]);
+    }, [map]);
 
+    // 2. Reagir a busca da IA (Mudança de centro)
     useEffect(() => {
-        if (map && selectedLocation) {
-            map.panTo(selectedLocation);
+        if (centerLocation && map) {
+            map.panTo(centerLocation);
+            map.setZoom(15);
         }
-    }, [map, selectedLocation]);
+    }, [centerLocation, map]);
 
     const onLoad = useCallback((map: google.maps.Map) => {
         setMap(map);
@@ -66,63 +83,86 @@ export function MapSelector({ onLocationSelect, selectedLocation, className, rea
         setMap(null);
     }, []);
 
-    const handleMapClick = useCallback((e: google.maps.MapMouseEvent) => {
-        if (readOnly || !onLocationSelect || !e.latLng) return;
-
-        const lat = e.latLng.lat();
-        const lng = e.latLng.lng();
-        onLocationSelect(lat, lng);
-    }, [readOnly, onLocationSelect]);
-
-    if (loadError) {
-        return (
-            <div className={cn("flex flex-col items-center justify-center bg-muted rounded-2xl border border-border text-center p-4", className || "h-64")}>
-                <p className="text-sm font-bold text-destructive mb-1">Erro no Google Maps</p>
-                <p className="text-xs text-muted-foreground">Verifique sua chave de API.</p>
-            </div>
-        );
-    }
-
-    if (!isLoaded || !center) {
-        return (
-            <div className={cn("flex items-center justify-center bg-muted rounded-2xl border border-border", className || "h-64")}>
-                <div className="text-center">
-                    <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto mb-2" />
-                    <p className="text-sm text-muted-foreground">Carregando mapa...</p>
-                </div>
-            </div>
-        );
-    }
+    if (loadError) return <div className="h-full flex items-center justify-center text-red-500">Erro ao carregar mapa</div>;
+    if (!isLoaded) return <div className="h-full flex items-center justify-center"><Loader2 className="w-10 h-10 animate-spin text-primary" /></div>;
 
     return (
-        <div className={cn("rounded-2xl overflow-hidden border border-border relative z-0", className || "h-64")}>
+        <div className={`relative w-full ${className || "h-screen"}`}>
             <GoogleMap
                 mapContainerStyle={{ width: '100%', height: '100%' }}
-                center={center}
-                zoom={15}
+                center={userLocation || { lat: -23.550520, lng: -46.633308 }}
+                zoom={14}
                 onLoad={onLoad}
                 onUnmount={onUnmount}
-                onClick={handleMapClick}
                 options={{
-                    disableDefaultUI: readOnly,
-                    zoomControl: !readOnly,
-                    mapTypeControl: false,
-                    streetViewControl: false,
+                    disableDefaultUI: true,
+                    zoomControl: false,
                     fullscreenControl: false,
-                    clickableIcons: !readOnly,
-                    gestureHandling: "greedy",
+                    styles: [
+                        {
+                            featureType: "poi",
+                            elementType: "labels",
+                            stylers: [{ visibility: "off" }] // Limpa o mapa, deixa só nossos pins
+                        }
+                    ]
                 }}
             >
-                {selectedLocation && (
-                    <Marker position={selectedLocation} />
+                {/* Marcador do Usuário (Bolinha Azul Pulsante) */}
+                {userLocation && (
+                    <Marker
+                        position={userLocation}
+                        icon={{
+                            path: google.maps.SymbolPath.CIRCLE,
+                            scale: 8,
+                            fillColor: "#4285F4",
+                            fillOpacity: 1,
+                            strokeColor: "#ffffff",
+                            strokeWeight: 2,
+                        }}
+                        zIndex={999}
+                    />
+                )}
+
+                {/* Marcadores dos Restaurantes */}
+                {markers.map((marker) => (
+                    <Marker
+                        key={marker.id}
+                        position={{ lat: marker.lat, lng: marker.lng }}
+                        onClick={() => {
+                            setSelectedMarker(marker);
+                            if (onMarkerClick) onMarkerClick(marker.id);
+                        }}
+                        icon={PIN_COLORS[marker.category] || PIN_COLORS["default"]}
+                    />
+                ))}
+
+                {selectedMarker && (
+                    <InfoWindow
+                        position={{ lat: selectedMarker.lat, lng: selectedMarker.lng }}
+                        onCloseClick={() => setSelectedMarker(null)}
+                    >
+                        <div className="p-2 min-w-[150px]">
+                            <h3 className="font-bold text-sm">{selectedMarker.name}</h3>
+                            <p className="text-xs text-gray-500 mb-2">{selectedMarker.category}</p>
+                            <button
+                                onClick={() => onMarkerClick && onMarkerClick(selectedMarker.id)}
+                                className="text-xs bg-primary text-white px-2 py-1 rounded w-full"
+                            >
+                                Ver Detalhes
+                            </button>
+                        </div>
+                    </InfoWindow>
                 )}
             </GoogleMap>
 
-            {!readOnly && !selectedLocation && (
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10 opacity-50">
-                    <MapPin className="w-8 h-8 text-primary animate-bounce" />
-                </div>
-            )}
+            {/* Botão para voltar para minha localização */}
+            <Button
+                className="absolute bottom-32 right-4 rounded-full w-12 h-12 shadow-lg z-10"
+                size="icon"
+                onClick={() => userLocation && map?.panTo(userLocation)}
+            >
+                <Navigation className="w-5 h-5" />
+            </Button>
         </div>
     );
 }
