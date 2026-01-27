@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { GoogleMap, useJsApiLoader, MarkerF, MarkerClustererF } from "@react-google-maps/api";
-import { Search, Mic, Star, ArrowRight, Navigation, DollarSign, Trophy, X, MapPin, Store } from "lucide-react"; // Adicionei Store para icone
+import { Search, Mic, Star, ArrowRight, Navigation, DollarSign, Trophy, X, MapPin, Store } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
@@ -10,6 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Card } from "@/components/ui/card";
 import { AppMenu } from "@/components/AppMenu";
 import { getMarkerIcon, mapStyles } from "@/utils/mapStyles";
+import { ActiveOrderBanner } from "@/components/ActiveOrderBanner";
 
 // --- CONFIGURAÇÕES ---
 const mapContainerStyle = { width: '100%', height: '100%' };
@@ -65,8 +66,8 @@ export default function Index() {
 
   // --- DADOS ---
   const [results, setResults] = useState<any[]>([]);
-  const [places, setPlaces] = useState<any[]>([]); // "Backup" de todos os locais
-  const [filteredPlaces, setFilteredPlaces] = useState<any[]>([]); // O que aparece no mapa
+  const [places, setPlaces] = useState<any[]>([]);
+  const [filteredPlaces, setFilteredPlaces] = useState<any[]>([]);
   const [selectedPlace, setSelectedPlace] = useState<any | null>(null);
   const [activeFilter, setActiveFilter] = useState("all");
 
@@ -81,7 +82,7 @@ export default function Index() {
   // --- FUNÇÃO AUXILIAR DE DISTÂNCIA ---
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
     if (!lat1 || !lon1 || !lat2 || !lon2) return "";
-    const R = 6371; // km
+    const R = 6371;
     const dLat = (lat2 - lat1) * (Math.PI / 180);
     const dLon = (lon2 - lon1) * (Math.PI / 180);
     const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
@@ -157,12 +158,11 @@ export default function Index() {
     try {
       const { data } = await supabase.from('markets').select('*');
       if (data) {
-        // CORREÇÃO: Mapeia market_id = id para garantir navegação correta
         const venues = data.map(m => ({
           ...m,
           type: 'venue',
           market_name: m.name,
-          market_id: m.id // IMPORTANTE: Define o ID de navegação
+          market_id: m.id
         })).filter(m => m.latitude && m.longitude);
 
         setPlaces(venues);
@@ -213,7 +213,6 @@ export default function Index() {
     }
   };
 
-  // --- LÓGICA DE RESTAURAR MAPA ---
   const handleDrawerChange = (isOpen: boolean) => {
     setIsDrawerOpen(isOpen);
     if (!isOpen) {
@@ -221,15 +220,24 @@ export default function Index() {
     }
   };
 
-  // --- NAVEGAÇÃO SEGURA (ALTERADA) ---
+  // --- NAVEGAÇÃO SEGURA (CORRIGIDA) ---
   const navigateToPlace = (item: any) => {
-    // Se for produto, vai para a página dedicada do produto
+    // CASO 1: É um PRODUTO (Lanche, Bebida, etc)
     if (item.type === 'product') {
-      navigate(`/product/${item.id}`);
+      // Navega para o restaurante dono do produto
+      // E passa o ID do produto no 'state' para abrirmos o drawer lá
+      const marketId = item.market_id || item.market?.id;
+
+      if (marketId) {
+        navigate(`/place/${marketId}`, { state: { openProductId: item.id } });
+      } else {
+        console.error("Produto sem market_id vinculado:", item);
+        toast({ title: "Erro", description: "Restaurante não encontrado.", variant: "destructive" });
+      }
       return;
     }
 
-    // Se for local (venue), vai para a página do local
+    // CASO 2: É UM RESTAURANTE (Venue)
     const targetId = item.market_id || (item.type === 'venue' ? item.id : null);
 
     if (targetId) {
@@ -260,17 +268,13 @@ export default function Index() {
 
   const onLoad = useCallback((map: google.maps.Map) => { mapRef.current = map; }, []);
 
-  // --- RENDERIZAÇÃO DO CARD ---
   const renderCardContent = (item: any) => {
-    // Lógica para imagem: se for produto, usa imagem do produto; se falhar ou for venue, usa a capa do mercado.
     const imageSource = item.type === 'product' && item.image_url
       ? item.image_url
       : (item.cover_image || item.market?.cover_image || '/placeholder.svg');
 
-    // Lógica para Nome do Restaurante
     const venueName = item.market_name || item.market?.name || "Restaurante";
 
-    // Cálculo da Distância
     const distanceText = userLocation
       ? calculateDistance(
         userLocation.lat,
@@ -416,7 +420,7 @@ export default function Index() {
         {loadingLocation ? <span className="animate-spin text-primary">⏳</span> : <Navigation className="w-5 h-5 text-blue-500" />}
       </Button>
 
-      {/* CARD FLUTUANTE (Super Clean) */}
+      {/* CARD FLUTUANTE */}
       <div className="absolute bottom-8 left-4 right-4 z-20 flex flex-col items-center gap-3 pointer-events-none">
 
         {selectedPlace && !isDrawerOpen && (
@@ -425,7 +429,6 @@ export default function Index() {
             onClick={() => navigateToPlace(selectedPlace)}
           >
             <div className="flex gap-3 items-center">
-              {/* Foto Redonda e Bonita */}
               <div
                 className="w-14 h-14 rounded-full bg-cover bg-center shrink-0 border-2 border-white shadow-sm"
                 style={{ backgroundImage: `url(${selectedPlace.type === 'product' && selectedPlace.image_url ? selectedPlace.image_url : (selectedPlace.cover_image || selectedPlace.market?.cover_image || '/placeholder.svg')})` }}
@@ -455,7 +458,6 @@ export default function Index() {
                 )}
               </div>
 
-              {/* Botão de Fechar Discreto */}
               <Button
                 variant="ghost"
                 size="icon"
@@ -534,6 +536,7 @@ export default function Index() {
           </div>
         </DrawerContent>
       </Drawer>
+      <ActiveOrderBanner />
     </div>
   );
 }

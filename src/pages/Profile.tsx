@@ -2,166 +2,98 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Loader2, Camera, User, Mail, LogOut } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Loader2, Package, LogOut, MapPin, User, ChevronRight } from "lucide-react";
 
 export default function Profile() {
   const navigate = useNavigate();
-  const { toast } = useToast();
+  const [user, setUser] = useState<any>(null);
+  const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-
-  const [profile, setProfile] = useState({
-    id: "",
-    display_name: "",
-    email: "",
-    avatar_url: "",
-    role: "user"
-  });
 
   useEffect(() => {
-    checkUser();
-  }, []);
+    const loadProfile = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        navigate("/auth");
+        return;
+      }
+      setUser(session.user);
 
-  const checkUser = async () => {
-    // 1. Verifica se tem sessão ativa
-    const { data: { session } } = await supabase.auth.getSession();
+      // Carrega Pedidos do Usuário
+      const { data: ordersData } = await supabase
+        .from('orders')
+        .select('*, markets(name)')
+        .eq('user_id', session.user.id)
+        .order('created_at', { ascending: false });
 
-    // Se não tiver sessão (Visitante), manda pro Login
-    if (!session) {
-      navigate("/auth");
-      return;
-    }
-
-    // 2. Busca dados do perfil
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", session.user.id)
-      .single();
-
-    if (data) {
-      setProfile({
-        id: session.user.id,
-        email: session.user.email || "",
-        display_name: data.display_name || "",
-        avatar_url: data.avatar_url || "",
-        role: data.role
-      });
-    }
-    setLoading(false);
-  };
-
-  const handleUpdate = async () => {
-    setSaving(true);
-    try {
-      const { error } = await supabase
-        .from("profiles")
-        .update({
-          display_name: profile.display_name,
-          avatar_url: profile.avatar_url
-        })
-        .eq("id", profile.id);
-
-      if (error) throw error;
-      toast({ title: "Perfil atualizado com sucesso!" });
-    } catch (error) {
-      toast({ title: "Erro ao atualizar", variant: "destructive" });
-    } finally {
-      setSaving(false);
-    }
-  };
+      setOrders(ordersData || []);
+      setLoading(false);
+    };
+    loadProfile();
+  }, [navigate]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
     navigate("/");
   };
 
-  if (loading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-primary w-8 h-8" /></div>;
+  if (loading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-primary" /></div>;
 
   return (
-    <div className="min-h-screen bg-gray-50 pb-20">
-      <div className="bg-white px-4 py-4 flex items-center gap-4 sticky top-0 z-10 border-b shadow-sm">
-        <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
-          <ArrowLeft className="w-5 h-5" />
-        </Button>
-        <h1 className="text-lg font-bold">Meu Perfil</h1>
-      </div>
-
-      <main className="p-4 max-w-md mx-auto space-y-6 mt-4">
-        {/* Foto e Role */}
-        <div className="flex flex-col items-center space-y-3">
-          <div className="relative">
-            <Avatar className="w-24 h-24 border-4 border-white shadow-lg">
-              <AvatarImage src={profile.avatar_url} />
-              <AvatarFallback className="text-2xl bg-gray-200">{profile.display_name?.charAt(0).toUpperCase()}</AvatarFallback>
-            </Avatar>
-            {/* Num futuro upgrade, podemos colocar um input file aqui para upload real */}
-            <div className="absolute bottom-0 right-0 bg-primary text-white p-1.5 rounded-full shadow-sm cursor-pointer hover:bg-primary/90">
-              <Camera className="w-4 h-4" />
-            </div>
+    <div className="min-h-screen bg-gray-50 font-sans pb-20">
+      <div className="bg-white p-6 border-b">
+        <div className="flex items-center gap-4 mb-4">
+          <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center text-gray-400">
+            <User className="w-8 h-8" />
           </div>
-          <div className="text-center">
-            <h2 className="font-bold text-xl">{profile.display_name || "Usuário"}</h2>
-            <span className="text-xs font-bold uppercase tracking-wider bg-gray-200 text-gray-600 px-2 py-1 rounded-full">
-              {profile.role === 'partner' ? 'Parceiro' : 'Membro'}
-            </span>
+          <div>
+            <h1 className="text-xl font-bold text-gray-900">{user.email?.split('@')[0]}</h1>
+            <p className="text-sm text-gray-500">{user.email}</p>
           </div>
         </div>
-
-        <Card className="border-0 shadow-md">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base text-gray-700">Informações Pessoais</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium flex items-center gap-2 text-gray-500">
-                <User className="w-4 h-4" /> Nome de Exibição
-              </label>
-              <Input
-                value={profile.display_name}
-                onChange={e => setProfile({ ...profile, display_name: e.target.value })}
-                className="bg-gray-50/50"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium flex items-center gap-2 text-gray-500">
-                <Mail className="w-4 h-4" /> Email
-              </label>
-              <Input value={profile.email} disabled className="bg-gray-100 text-gray-500" />
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium flex items-center gap-2 text-gray-500">
-                <Camera className="w-4 h-4" /> URL da Foto
-              </label>
-              <Input
-                placeholder="https://..."
-                value={profile.avatar_url}
-                onChange={e => setProfile({ ...profile, avatar_url: e.target.value })}
-                className="bg-gray-50/50"
-              />
-            </div>
-
-            <Button className="w-full mt-4 h-12" onClick={handleUpdate} disabled={saving}>
-              {saving ? <Loader2 className="animate-spin w-4 h-4 mr-2" /> : "Salvar Alterações"}
-            </Button>
-          </CardContent>
-        </Card>
-
-        {/* Botão de Logout */}
-        <Button
-          variant="ghost"
-          className="w-full text-red-500 hover:text-red-600 hover:bg-red-50 h-12"
-          onClick={handleLogout}
-        >
+        <Button variant="outline" className="w-full text-red-500 hover:text-red-600 hover:bg-red-50" onClick={handleLogout}>
           <LogOut className="w-4 h-4 mr-2" /> Sair da Conta
         </Button>
-      </main>
+      </div>
+
+      <div className="p-4 space-y-6">
+        <div>
+          <h2 className="text-sm font-bold text-gray-500 uppercase mb-3 ml-1 flex items-center gap-2">
+            <Package className="w-4 h-4" /> Meus Pedidos
+          </h2>
+          <div className="space-y-3">
+            {orders.length === 0 && <div className="text-center py-10 text-gray-400">Nenhum pedido ainda.</div>}
+            {orders.map(order => (
+              <Card
+                key={order.id}
+                className="border-0 shadow-sm active:scale-[0.98] transition-transform cursor-pointer"
+                onClick={() => navigate(`/order/${order.id}`)}
+              >
+                <CardContent className="p-4 flex justify-between items-center">
+                  <div>
+                    <h3 className="font-bold text-gray-900">{order.markets?.name}</h3>
+                    <p className="text-xs text-gray-500 mb-2">
+                      {new Date(order.created_at).toLocaleDateString()} às {new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                    <Badge variant={order.status === 'delivered' ? 'outline' : 'default'} className={order.status === 'delivered' ? 'text-green-600 border-green-200 bg-green-50' : ''}>
+                      {order.status === 'pending' && 'Enviado'}
+                      {order.status === 'preparing' && 'Preparando'}
+                      {order.status === 'ready' && 'Saiu para Entrega'}
+                      {order.status === 'delivered' && 'Entregue'}
+                    </Badge>
+                  </div>
+                  <div className="text-right">
+                    <span className="block font-bold text-gray-900 mb-1">R$ {order.total_amount.toFixed(2)}</span>
+                    <ChevronRight className="w-5 h-5 text-gray-300 ml-auto" />
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
