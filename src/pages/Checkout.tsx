@@ -8,12 +8,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, MapPin, Wallet, Bike, Store, Loader2, Plus } from "lucide-react";
+import { ArrowLeft, MapPin, Wallet, Bike, Store, Loader2, Plus, Clock, DollarSign } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
 export default function Checkout() {
-    const { items, total, marketId, clearCart } = useCart();
+    const { items, total: cartSubtotal, marketId, clearCart } = useCart();
     const navigate = useNavigate();
     const location = useLocation();
     const { toast } = useToast();
@@ -21,6 +21,7 @@ export default function Checkout() {
     const [user, setUser] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const [submitting, setSubmitting] = useState(false);
+    const [marketConfig, setMarketConfig] = useState<any>(null);
 
     // Dados do Pedido
     const [orderType, setOrderType] = useState("delivery");
@@ -33,22 +34,20 @@ export default function Checkout() {
     const [newAddress, setNewAddress] = useState({ name: "Casa", street: "", number: "", neighborhood: "", complement: "" });
     const [isAddressModalOpen, setIsAddressModalOpen] = useState(false);
 
-    // 1. Verificação de Autenticação (Gatekeeper)
     useEffect(() => {
         const checkAuth = async () => {
             const { data: { session } } = await supabase.auth.getSession();
             if (!session) {
-                // Se não logado, manda pro login e avisa pra voltar pra cá depois
                 navigate("/auth", { state: { from: location } });
                 return;
             }
             setUser(session.user);
             fetchAddresses(session.user.id);
+            fetchMarketConfig();
         };
         checkAuth();
-    }, [navigate, location]);
+    }, [navigate, location, marketId]);
 
-    // Redireciona se carrinho vazio
     useEffect(() => {
         if (items.length === 0) navigate("/");
     }, [items, navigate]);
@@ -57,9 +56,15 @@ export default function Checkout() {
         const { data } = await supabase.from('user_addresses').select('*').eq('user_id', userId).order('created_at', { ascending: false });
         if (data && data.length > 0) {
             setSavedAddresses(data);
-            setSelectedAddressId(data[0].id); // Seleciona o mais recente
+            setSelectedAddressId(data[0].id);
         }
         setLoading(false);
+    };
+
+    const fetchMarketConfig = async () => {
+        if (!marketId) return;
+        const { data } = await supabase.from('markets').select('delivery_fee, delivery_time_min, delivery_time_max').eq('id', marketId).single();
+        if (data) setMarketConfig(data);
     };
 
     const handleSaveAddress = async () => {
@@ -88,21 +93,30 @@ export default function Checkout() {
 
         setSubmitting(true);
         try {
-            // Pega o endereço selecionado completo
             const addr = savedAddresses.find(a => a.id === selectedAddressId) || {};
+
+            // Cálculos Finais
+            const fee = orderType === 'delivery' ? (marketConfig?.delivery_fee || 0) : 0;
+            const finalTotal = cartSubtotal + fee;
 
             // 1. Criar o Pedido
             const { data: order, error: orderError } = await supabase.from("orders").insert({
                 market_id: marketId,
-                user_id: user.id, // Vínculo com o usuário logado
-                customer_name: user.email?.split('@')[0], // Nome provisório ou pedir no perfil
-                customer_phone: "", // Idealmente pedir no cadastro/perfil
+                user_id: user.id,
+                customer_name: user.email?.split('@')[0],
+                customer_phone: "",
                 order_type: orderType,
                 status: "pending",
                 payment_status: "pending",
                 payment_method: paymentMethod,
-                total_amount: total,
-                // Grava o endereço snapshot no pedido (para histórico não mudar se o user editar depois)
+
+                // Valores
+                total_amount: finalTotal,
+                delivery_fee: fee,
+                estimated_min: marketConfig?.delivery_time_min,
+                estimated_max: marketConfig?.delivery_time_max,
+
+                // Endereço Snapshot
                 address_street: addr.street,
                 address_number: addr.number,
                 address_neighborhood: addr.neighborhood,
@@ -127,10 +141,9 @@ export default function Checkout() {
             const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
             if (itemsError) throw itemsError;
 
-            // 3. Sucesso
             clearCart();
             toast({ title: "Pedido Enviado!", className: "bg-green-600 text-white" });
-            navigate(`/order/${order.id}`); // Vai para o Tracking
+            navigate(`/order/${order.id}`);
 
         } catch (error: any) {
             toast({ title: "Erro ao enviar", description: error.message, variant: "destructive" });
@@ -141,6 +154,10 @@ export default function Checkout() {
 
     if (loading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-primary" /></div>;
 
+    // Totais para exibição
+    const currentFee = orderType === 'delivery' ? (marketConfig?.delivery_fee || 0) : 0;
+    const currentTotal = cartSubtotal + currentFee;
+
     return (
         <div className="min-h-screen bg-gray-50 pb-32 font-sans">
             <div className="bg-white p-4 sticky top-0 z-10 border-b flex items-center gap-4">
@@ -149,7 +166,6 @@ export default function Checkout() {
             </div>
 
             <div className="p-4 space-y-6 max-w-lg mx-auto">
-                {/* Tipo de Entrega */}
                 <Tabs defaultValue="delivery" onValueChange={setOrderType} className="w-full">
                     <TabsList className="w-full grid grid-cols-2 mb-3">
                         <TabsTrigger value="delivery"><Bike className="w-4 h-4 mr-2" /> Delivery</TabsTrigger>
@@ -158,14 +174,8 @@ export default function Checkout() {
 
                     <TabsContent value="delivery" className="space-y-3">
                         <h2 className="text-sm font-bold text-gray-500 uppercase flex items-center gap-2"><MapPin className="w-4 h-4" /> Onde entregar?</h2>
-
-                        {/* Lista de Endereços Salvos */}
                         {savedAddresses.map(addr => (
-                            <div
-                                key={addr.id}
-                                onClick={() => setSelectedAddressId(addr.id)}
-                                className={`p-4 rounded-xl border-2 cursor-pointer flex justify-between items-center transition-all ${selectedAddressId === addr.id ? 'border-primary bg-primary/5' : 'border-transparent bg-white shadow-sm'}`}
-                            >
+                            <div key={addr.id} onClick={() => setSelectedAddressId(addr.id)} className={`p-4 rounded-xl border-2 cursor-pointer flex justify-between items-center transition-all ${selectedAddressId === addr.id ? 'border-primary bg-primary/5' : 'border-transparent bg-white shadow-sm'}`}>
                                 <div>
                                     <div className="font-bold text-gray-900">{addr.name}</div>
                                     <div className="text-sm text-gray-500">{addr.street}, {addr.number} - {addr.neighborhood}</div>
@@ -175,20 +185,13 @@ export default function Checkout() {
                                 </div>
                             </div>
                         ))}
-
-                        {/* Botão Novo Endereço */}
                         <Dialog open={isAddressModalOpen} onOpenChange={setIsAddressModalOpen}>
-                            <DialogTrigger asChild>
-                                <Button variant="outline" className="w-full border-dashed border-2 h-12 text-gray-500"><Plus className="w-4 h-4 mr-2" /> Novo Endereço</Button>
-                            </DialogTrigger>
+                            <DialogTrigger asChild><Button variant="outline" className="w-full border-dashed border-2 h-12 text-gray-500"><Plus className="w-4 h-4 mr-2" /> Novo Endereço</Button></DialogTrigger>
                             <DialogContent>
                                 <DialogHeader><DialogTitle>Adicionar Endereço</DialogTitle></DialogHeader>
                                 <div className="space-y-3 py-2">
                                     <Input placeholder="Nome (Ex: Casa)" value={newAddress.name} onChange={e => setNewAddress({ ...newAddress, name: e.target.value })} />
-                                    <div className="grid grid-cols-3 gap-2">
-                                        <Input className="col-span-2" placeholder="Rua" value={newAddress.street} onChange={e => setNewAddress({ ...newAddress, street: e.target.value })} />
-                                        <Input placeholder="Nº" value={newAddress.number} onChange={e => setNewAddress({ ...newAddress, number: e.target.value })} />
-                                    </div>
+                                    <div className="grid grid-cols-3 gap-2"><Input className="col-span-2" placeholder="Rua" value={newAddress.street} onChange={e => setNewAddress({ ...newAddress, street: e.target.value })} /><Input placeholder="Nº" value={newAddress.number} onChange={e => setNewAddress({ ...newAddress, number: e.target.value })} /></div>
                                     <Input placeholder="Bairro" value={newAddress.neighborhood} onChange={e => setNewAddress({ ...newAddress, neighborhood: e.target.value })} />
                                     <Input placeholder="Complemento" value={newAddress.complement} onChange={e => setNewAddress({ ...newAddress, complement: e.target.value })} />
                                     <Button className="w-full" onClick={handleSaveAddress}>Salvar Endereço</Button>
@@ -198,40 +201,43 @@ export default function Checkout() {
                     </TabsContent>
 
                     <TabsContent value="pickup">
-                        <div className="bg-orange-50 p-4 rounded-xl text-orange-800 text-sm border border-orange-100">
-                            Você deverá retirar o pedido no balcão do restaurante.
-                        </div>
+                        <div className="bg-orange-50 p-4 rounded-xl text-orange-800 text-sm border border-orange-100">Você deverá retirar o pedido no balcão do restaurante.</div>
                     </TabsContent>
                 </Tabs>
 
-                {/* Pagamento */}
                 <section className="space-y-3">
                     <h2 className="text-sm font-bold text-gray-500 uppercase flex items-center gap-2"><Wallet className="w-4 h-4" /> Pagamento</h2>
                     <Card className="border-none shadow-sm">
                         <CardContent className="p-4">
                             <RadioGroup value={paymentMethod} onValueChange={setPaymentMethod} className="space-y-3">
-                                <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer">
-                                    <RadioGroupItem value="credit" id="r1" /><Label htmlFor="r1" className="cursor-pointer flex-1">Crédito (Entrega)</Label>
-                                </div>
-                                <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer">
-                                    <RadioGroupItem value="debit" id="r2" /><Label htmlFor="r2" className="cursor-pointer flex-1">Débito (Entrega)</Label>
-                                </div>
-                                <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer">
-                                    <RadioGroupItem value="pix" id="r3" /><Label htmlFor="r3" className="cursor-pointer flex-1">Pix (Entrega)</Label>
-                                </div>
-                                <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer">
-                                    <RadioGroupItem value="cash" id="r4" /><Label htmlFor="r4" className="cursor-pointer flex-1">Dinheiro</Label>
-                                </div>
+                                <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="credit" id="r1" /><Label htmlFor="r1" className="cursor-pointer flex-1">Crédito (Entrega)</Label></div>
+                                <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="debit" id="r2" /><Label htmlFor="r2" className="cursor-pointer flex-1">Débito (Entrega)</Label></div>
+                                <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="pix" id="r3" /><Label htmlFor="r3" className="cursor-pointer flex-1">Pix (Entrega)</Label></div>
+                                <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="cash" id="r4" /><Label htmlFor="r4" className="cursor-pointer flex-1">Dinheiro</Label></div>
                             </RadioGroup>
-                            {paymentMethod === 'cash' && (
-                                <div className="mt-3"><Label>Troco para quanto?</Label><Input type="number" placeholder="Ex: 50" value={changeFor} onChange={e => setChangeFor(e.target.value)} className="mt-1" /></div>
-                            )}
+                            {paymentMethod === 'cash' && (<div className="mt-3"><Label>Troco para quanto?</Label><Input type="number" placeholder="Ex: 50" value={changeFor} onChange={e => setChangeFor(e.target.value)} className="mt-1" /></div>)}
                         </CardContent>
                     </Card>
                 </section>
 
+                {/* Resumo de Valores */}
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 space-y-2 text-sm">
+                    <div className="flex justify-between text-gray-600"><span>Subtotal</span><span>R$ {cartSubtotal.toFixed(2)}</span></div>
+                    {orderType === 'delivery' && (
+                        <div className="flex justify-between text-gray-600">
+                            <span className="flex items-center gap-1"><Bike className="w-3 h-3" /> Taxa de Entrega</span>
+                            <span>R$ {currentFee.toFixed(2)}</span>
+                        </div>
+                    )}
+                    <div className="flex justify-between text-gray-600">
+                        <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> Tempo Estimado</span>
+                        <span>{marketConfig?.delivery_time_min}-{marketConfig?.delivery_time_max} min</span>
+                    </div>
+                    <div className="flex justify-between font-bold text-lg pt-2 border-t mt-2"><span>Total</span><span>R$ {currentTotal.toFixed(2)}</span></div>
+                </div>
+
                 <Button className="w-full h-14 text-lg font-bold bg-green-600 hover:bg-green-700 shadow-xl rounded-xl" onClick={handlePlaceOrder} disabled={submitting}>
-                    {submitting ? <Loader2 className="animate-spin mr-2" /> : `Finalizar Pedido • R$ ${total.toFixed(2)}`}
+                    {submitting ? <Loader2 className="animate-spin mr-2" /> : `Finalizar Pedido`}
                 </Button>
             </div>
         </div>

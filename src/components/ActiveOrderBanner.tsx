@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Loader2, ChefHat, Bike, Clock, ChevronRight, XCircle } from "lucide-react";
+import { Loader2, ChefHat, Bike, Clock, ChevronRight, Hash, CheckCircle2 } from "lucide-react";
 
 export function ActiveOrderBanner() {
     const navigate = useNavigate();
@@ -14,28 +14,22 @@ export function ActiveOrderBanner() {
         let userId: string | undefined;
 
         const setupRealtime = async () => {
-            // 1. Pega usuário atual
             const { data: { session } } = await supabase.auth.getSession();
             if (!session) return;
             userId = session.user.id;
 
-            // 2. Busca inicial
             await fetchActiveOrder(userId);
 
-            // 3. INSCRIÇÃO REALTIME (O Segredo da Atualização Automática)
-            // Escuta QUALQUER mudança na tabela 'orders'
             const channel = supabase.channel('any_order_change')
                 .on(
                     'postgres_changes',
                     {
-                        event: '*', // Insert, Update ou Delete
+                        event: '*',
                         schema: 'public',
                         table: 'orders',
-                        filter: `user_id=eq.${userId}` // Filtra só para este usuário
+                        filter: `user_id=eq.${userId}`
                     },
                     (payload) => {
-                        // Se houver qualquer mudança no banco, atualizamos o banner
-                        console.log("Mudança detectada no pedido:", payload);
                         fetchActiveOrder(userId!);
                     }
                 )
@@ -49,18 +43,33 @@ export function ActiveOrderBanner() {
         setupRealtime();
     }, []);
 
+    // EFEITO: Fecha o banner automaticamente após 5 segundos se for ENTREGUE
+    useEffect(() => {
+        if (activeOrder?.status === 'delivered') {
+            const timer = setTimeout(() => {
+                setIsVisible(false);
+                setActiveOrder(null);
+            }, 5000); // 5 Segundos de exibição da mensagem de sucesso
+
+            return () => clearTimeout(timer);
+        }
+    }, [activeOrder?.status]);
+
     const fetchActiveOrder = async (uid: string) => {
         const { data } = await supabase
             .from('orders')
-            .select('id, status, markets(name)')
+            .select('id, status, delivery_code, markets(name)')
             .eq('user_id', uid)
-            // Trazemos apenas pedidos que NÃO estão finalizados (entregue ou cancelado)
-            .in('status', ['pending', 'preparing', 'ready'])
+            // IMPORTANTE: Agora incluímos 'delivered' na busca para poder mostrar a animação
+            .in('status', ['pending', 'preparing', 'ready', 'delivered'])
             .order('created_at', { ascending: false })
             .limit(1)
             .maybeSingle();
 
         if (data) {
+            // Se o pedido já foi entregue há muito tempo (ex: usuário recarregou a página), não mostramos.
+            // Mas se acabou de mudar via realtime, mostramos.
+            // (Para simplificar, mostramos sempre e o useEffect acima esconde em 5s)
             setActiveOrder(data);
             setIsVisible(true);
         } else {
@@ -71,31 +80,26 @@ export function ActiveOrderBanner() {
 
     if (!isVisible || !activeOrder) return null;
 
-    // Configuração Visual baseada no Status
     const getStatusInfo = (status: string) => {
         switch (status) {
             case 'pending': return {
-                icon: Clock,
-                label: "Aguardando confirmação...",
-                color: "text-orange-600",
-                bg: "bg-orange-100",
-                animate: "animate-pulse"
+                icon: Clock, label: "Aguardando confirmação...",
+                color: "text-orange-600", bg: "bg-orange-100", border: "border-l-orange-500", animate: "animate-pulse"
             };
             case 'preparing': return {
-                icon: ChefHat,
-                label: "Sendo preparado!",
-                color: "text-blue-600",
-                bg: "bg-blue-100",
-                animate: ""
+                icon: ChefHat, label: "Sendo preparado!",
+                color: "text-blue-600", bg: "bg-blue-100", border: "border-l-blue-500", animate: ""
             };
             case 'ready': return {
-                icon: Bike,
-                label: "Saiu para entrega",
-                color: "text-green-600",
-                bg: "bg-green-100",
-                animate: "animate-bounce"
+                icon: Bike, label: "Saiu para entrega",
+                color: "text-indigo-600", bg: "bg-indigo-100", border: "border-l-indigo-500", animate: "animate-bounce"
             };
-            default: return { icon: Loader2, label: "Processando...", color: "text-gray-500", bg: "bg-gray-100", animate: "animate-spin" };
+            // NOVO STATUS: ENTREGUE
+            case 'delivered': return {
+                icon: CheckCircle2, label: "Pedido Entregue! Bom apetite 😋",
+                color: "text-green-700", bg: "bg-green-100", border: "border-l-green-600", animate: "animate-bounce"
+            };
+            default: return { icon: Loader2, label: "Processando...", color: "text-gray-500", bg: "bg-gray-100", border: "border-l-gray-400", animate: "animate-spin" };
         }
     };
 
@@ -105,7 +109,7 @@ export function ActiveOrderBanner() {
     return (
         <div className="fixed top-28 left-4 right-4 z-50 animate-in slide-in-from-top-5 fade-in duration-500">
             <Card
-                className="p-3 shadow-xl border-0 bg-white/95 backdrop-blur-md flex items-center justify-between cursor-pointer active:scale-[0.98] transition-transform rounded-xl border-l-4 border-l-primary"
+                className={`p-3 shadow-xl border-0 bg-white/95 backdrop-blur-md flex items-center justify-between cursor-pointer active:scale-[0.98] transition-transform rounded-xl border-l-4 ${info.border}`}
                 onClick={() => navigate(`/order/${activeOrder.id}`)}
             >
                 <div className="flex items-center gap-3">
@@ -116,9 +120,21 @@ export function ActiveOrderBanner() {
                         <span className="font-bold text-sm text-gray-800 leading-tight">
                             {info.label}
                         </span>
-                        <span className="text-xs text-gray-500 font-medium truncate max-w-[200px]">
-                            Pedido no {activeOrder.markets?.name}
-                        </span>
+
+                        {/* Lógica de Exibição de Texto Auxiliar */}
+                        {activeOrder.status === 'ready' ? (
+                            <span className="text-xs text-primary font-black flex items-center gap-1 mt-0.5 animate-pulse">
+                                <Hash className="w-3 h-3" /> CÓDIGO: {activeOrder.delivery_code}
+                            </span>
+                        ) : activeOrder.status === 'delivered' ? (
+                            <span className="text-xs text-green-600 font-medium">
+                                Obrigado pela preferência!
+                            </span>
+                        ) : (
+                            <span className="text-xs text-gray-500 font-medium truncate max-w-[200px]">
+                                Pedido no {activeOrder.markets?.name}
+                            </span>
+                        )}
                     </div>
                 </div>
 
