@@ -11,6 +11,8 @@ import { Card } from "@/components/ui/card";
 import { AppMenu } from "@/components/AppMenu";
 import { getMarkerIcon, mapStyles } from "@/utils/mapStyles";
 import { ActiveOrderBanner } from "@/components/ActiveOrderBanner";
+import { PendingReviewCard } from "@/components/PendingReviewCard";
+import { DeliveryReviewModal } from "@/components/DeliveryReviewModal";
 
 // --- CONFIGURAÇÕES ---
 const mapContainerStyle = { width: '100%', height: '100%' };
@@ -57,10 +59,7 @@ const checkIsOpen = (hours: any) => {
   const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
 
   const todaySchedule = hours[currentDay];
-  // Se não tiver horário ou estiver marcado como fechado
   if (!todaySchedule || todaySchedule.closed) return false;
-
-  // Verifica se está dentro do intervalo
   return currentTime >= todaySchedule.open && currentTime <= todaySchedule.close;
 };
 
@@ -87,6 +86,10 @@ export default function Index() {
   const [selectedPlace, setSelectedPlace] = useState<any | null>(null);
   const [activeFilter, setActiveFilter] = useState("all");
   const [userCoins, setUserCoins] = useState<number | null>(null);
+
+  // --- ESTADOS DE AVALIAÇÃO IMEDIATA ---
+  const [immediateReviewOrder, setImmediateReviewOrder] = useState<any>(null);
+  const [showImmediateModal, setShowImmediateModal] = useState(false);
 
   // ESTADO PARA FORÇAR RE-RENDER A CADA MINUTO (Relógio)
   const [ticker, setTicker] = useState(0);
@@ -151,7 +154,37 @@ export default function Index() {
     return () => clearInterval(interval);
   }, []);
 
-  // 3. INICIALIZAÇÃO E REALTIME
+  // 3. FUNÇÃO DE CHECK DE AVALIAÇÃO IMEDIATA (MOTOBOY/APP)
+  const checkImmediateReviews = async (userId: string) => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+    const { data: recentOrders } = await supabase
+      .from('orders')
+      .select('*, couriers(name, id)')
+      .eq('user_id', userId)
+      .eq('status', 'delivered')
+      .gt('created_at', twoHoursAgo)
+      .order('updated_at', { ascending: false })
+      .limit(1);
+
+    if (recentOrders && recentOrders.length > 0) {
+      const order = recentOrders[0];
+
+      const { count } = await supabase
+        .from('reviews')
+        .select('*', { count: 'exact', head: true })
+        .eq('order_id', order.id)
+        .eq('target_type', 'driver');
+
+      if (count === 0) {
+        console.log("Avaliação imediata encontrada para:", order.id);
+        setImmediateReviewOrder(order);
+        setShowImmediateModal(true);
+      }
+    }
+  };
+
+  // 4. INICIALIZAÇÃO E REALTIME
   useEffect(() => {
     let isMounted = true;
     let profileSubscription: any = null;
@@ -165,38 +198,42 @@ export default function Index() {
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
         const userId = session.user.id;
+
+        // CHECK INICIAL DE AVALIAÇÃO
+        checkImmediateReviews(userId);
+
         const fetchBalance = async () => {
           const { data } = await supabase.from('profiles').select('coin_balance').eq('id', userId).single();
           if (data) setUserCoins(data.coin_balance || 0);
         };
         await fetchBalance();
 
-        // Listener de Perfil (Coins)
         profileSubscription = supabase
           .channel(`profile_changes_${userId}`)
           .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${userId}` }, (payload: any) => {
             if (payload.new && payload.new.coin_balance !== undefined) setUserCoins(payload.new.coin_balance);
           }).subscribe();
 
-        // Listener de Pedidos (Atualizar Coins ao Finalizar OU CANCELAR)
+        // MONITORAMENTO DE PEDIDOS
         orderSubscription = supabase
           .channel(`order_changes_${userId}`)
           .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders', filter: `user_id=eq.${userId}` }, (payload: any) => {
-            // CORREÇÃO: Verifica se foi entregue OU cancelado para atualizar o saldo
-            // Usamos setTimeout para garantir que a trigger do banco já tenha rodado
             const status = payload.new.status;
+
+            if (status === 'delivered') {
+              checkImmediateReviews(userId);
+            }
+
             if (status === 'delivered' || status === 'canceled') {
-              console.log("Pedido finalizado/cancelado, atualizando saldo...");
               setTimeout(fetchBalance, 1500);
             }
           }).subscribe();
       }
 
-      // IMPORTANTE: Escuta mudanças nas configurações dos restaurantes (ex: Dono fechou agora)
       marketSubscription = supabase
         .channel('market_updates_global')
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'markets' }, () => {
-          fetchNearbyPlaces(); // Recarrega os locais para pegar novo horário
+          fetchNearbyPlaces();
         })
         .subscribe();
 
@@ -232,8 +269,7 @@ export default function Index() {
 
   const fetchNearbyPlaces = async () => {
     try {
-      // Trazendo opening_hours
-      const { data } = await supabase.from('markets').select('*, opening_hours');
+      const { data } = await supabase.from('markets').select('*, opening_hours, rating'); // Garantindo rating
       if (data) {
         const venues = data.map(m => ({
           ...m,
@@ -303,7 +339,6 @@ export default function Index() {
       if (marketId) {
         navigate(`/place/${marketId}`, { state: { openProductId: item.id } });
       } else {
-        console.error("Produto sem market_id vinculado:", item);
         toast({ title: "Erro", description: "Restaurante não encontrado.", variant: "destructive" });
       }
       return;
@@ -312,7 +347,6 @@ export default function Index() {
     if (targetId) {
       navigate(`/place/${targetId}`);
     } else {
-      console.error("ID do local inválido:", item);
       toast({ title: "Erro", description: "Não foi possível abrir este local.", variant: "destructive" });
     }
   };
@@ -337,6 +371,7 @@ export default function Index() {
 
   const onLoad = useCallback((map: google.maps.Map) => { mapRef.current = map; }, []);
 
+  // --- CORREÇÃO DA RENDERIZAÇÃO ---
   const renderCardContent = (item: any) => {
     const imageSource = item.type === 'product' && item.image_url
       ? item.image_url
@@ -353,8 +388,17 @@ export default function Index() {
       )
       : "";
 
-    // VERIFICA SE ESTÁ ABERTO (Isso roda a cada render do ticker)
-    const isOpen = item.type === 'product' ? checkIsOpen(item.market?.opening_hours) : checkIsOpen(item.opening_hours);
+    // DEFINIÇÃO EXPLÍCITA DE ISOPEN ANTES DO USO
+    const isOpen = item.type === 'product'
+      ? checkIsOpen(item.market?.opening_hours)
+      : checkIsOpen(item.opening_hours);
+
+    // NOTA DO CARD - Agora puxa corretamente do objeto item (atualizado pela trigger no banco)
+    const displayRating = item.type === 'product'
+      ? (item.market?.rating || 0)
+      : (item.rating || 0);
+
+    const ratingText = displayRating > 0 ? displayRating.toFixed(1) : "Novo";
 
     return (
       <div className={`flex p-3 gap-3 w-full bg-white ${!isOpen ? 'opacity-75' : ''}`}>
@@ -372,7 +416,7 @@ export default function Index() {
               <div className="flex flex-col items-end">
                 <span className="flex items-center text-[10px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-md shrink-0">
                   <Star className="w-3 h-3 mr-1 fill-amber-600" />
-                  {item.type === 'product' ? (item.market?.rating || 4.5) : (item.rating || 4.5)}
+                  {ratingText}
                 </span>
                 {distanceText && (
                   <span className="text-[10px] text-gray-400 mt-0.5 font-medium">{distanceText}</span>
@@ -391,13 +435,11 @@ export default function Index() {
               <p className="text-xs text-gray-500 mt-1 line-clamp-2">{item.category} • {item.address}</p>
             )}
 
-            {/* AVISO DE FECHADO DISCRETO - LOGO APÓS O ENDEREÇO/DESCRIÇÃO */}
             {!isOpen && (
               <div className="mt-1 flex items-center gap-1 text-red-600 font-bold text-xs bg-red-50 w-fit px-2 py-0.5 rounded border border-red-100">
                 <Clock className="w-3 h-3" /> Fechado Agora
               </div>
             )}
-
           </div>
 
           <div className="flex items-end justify-between mt-2">
@@ -425,7 +467,7 @@ export default function Index() {
     <div className="relative h-screen w-full overflow-hidden flex flex-col bg-background font-sans">
 
       {/* HEADER */}
-      <div className="absolute top-0 left-0 right-0 z-30 p-4 bg-gradient-to-b from-white/90 to-transparent pointer-events-none">
+      <div className="absolute top-0 left-0 right-0 z-30 p-4 bg-white/95 backdrop-blur-md shadow-sm pointer-events-none">
         <div className="flex justify-between items-start pointer-events-auto">
           <div className="flex gap-2">
             <AppMenu />
@@ -449,7 +491,7 @@ export default function Index() {
                   whitespace-nowrap px-4 py-2 rounded-full text-sm font-bold shadow-md transition-all
                   ${activeFilter === filter.value
                     ? "bg-primary text-white scale-105"
-                    : "bg-white text-gray-700 hover:bg-gray-50"}
+                    : "bg-gray-100 text-gray-700 hover:bg-gray-200"}
                 `}
               >
                 {filter.label}
@@ -458,6 +500,22 @@ export default function Index() {
           </div>
         </div>
       </div>
+
+      {/* CARD DE AVALIAÇÃO TARDIA (BANNER FLUTUANTE) */}
+      <div className="absolute top-28 left-0 right-0 z-20 pointer-events-none">
+        <div className="pointer-events-auto">
+          <PendingReviewCard />
+        </div>
+      </div>
+
+      {/* MODAL DE AVALIAÇÃO IMEDIATA (MOTOBOY) */}
+      <DeliveryReviewModal
+        isOpen={showImmediateModal}
+        onClose={() => setShowImmediateModal(false)}
+        orderId={immediateReviewOrder?.id || ""}
+        courierId={immediateReviewOrder?.courier_id}
+        courierName={immediateReviewOrder?.couriers?.name || "Entregador"}
+      />
 
       {/* MAPA */}
       <div className="absolute inset-0 z-0">
@@ -523,7 +581,7 @@ export default function Index() {
         {loadingLocation ? <span className="animate-spin text-primary">⏳</span> : <Navigation className="w-5 h-5 text-blue-500" />}
       </Button>
 
-      {/* CARD FLUTUANTE */}
+      {/* CARD FLUTUANTE DE DETALHE E BUSCA */}
       <div className="absolute bottom-8 left-4 right-4 z-20 flex flex-col items-center gap-3 pointer-events-none">
 
         {selectedPlace && !isDrawerOpen && (
@@ -544,7 +602,7 @@ export default function Index() {
                   </h3>
                   <span className="flex items-center text-xs font-bold text-amber-500 bg-amber-50 px-1.5 py-0.5 rounded ml-2">
                     <Star className="w-3 h-3 fill-current mr-1" />
-                    {selectedPlace.type === 'product' ? (selectedPlace.market?.rating || 4.5) : (selectedPlace.rating || 4.5)}
+                    {selectedPlace.type === 'product' ? (selectedPlace.market?.rating || 0).toFixed(1) : (selectedPlace.rating || 0).toFixed(1)}
                   </span>
                 </div>
 

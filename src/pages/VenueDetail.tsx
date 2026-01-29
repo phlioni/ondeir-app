@@ -4,10 +4,11 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowLeft, MapPin, Star, Utensils, Share2, Info, Coins, Clock } from "lucide-react";
+import { ArrowLeft, MapPin, Star, Utensils, Share2, Info, Coins, Clock, User, MessageCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { ProductDrawer } from "@/components/ProductDrawer";
 import { CartFloatingBar } from "@/components/CartFloatingBar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 const checkIsOpen = (hours: any) => {
     if (!hours) return true;
@@ -33,6 +34,7 @@ export default function VenueDetail() {
 
     const [venue, setVenue] = useState<any>(null);
     const [menu, setMenu] = useState<any[]>([]);
+    const [reviews, setReviews] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
 
     // Estado dinâmico de abertura
@@ -80,6 +82,7 @@ export default function VenueDetail() {
 
     const fetchVenueData = async (venueId: string) => {
         try {
+            // 1. Busca Restaurante
             const { data: venueData, error: venueError } = await supabase
                 .from("markets")
                 .select("*, coin_balance")
@@ -90,6 +93,7 @@ export default function VenueDetail() {
             setVenue(venueData);
             setIsOpen(checkIsOpen(venueData.opening_hours));
 
+            // 2. Busca Menu
             const { data: menuData, error: menuError } = await supabase
                 .from("menu_items")
                 .select("*")
@@ -98,6 +102,29 @@ export default function VenueDetail() {
 
             if (menuError) throw menuError;
             setMenu(menuData || []);
+
+            // 3. Busca Avaliações (ATUALIZADO para incluir replies)
+            const { data: reviewsData, error: reviewsError } = await supabase
+                .from("reviews")
+                .select(`
+                    *,
+                    profiles (display_name, avatar_url),
+                    replies:review_replies (
+                        id, content, created_at, user_id
+                    )
+                `)
+                .eq("target_id", venueId)
+                .eq("target_type", "restaurant")
+                .order("created_at", { ascending: false });
+
+            if (!reviewsError && reviewsData) {
+                // Ordena as respostas por data (antigas primeiro)
+                const reviewsWithSortedReplies = reviewsData.map((r: any) => ({
+                    ...r,
+                    replies: r.replies?.sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) || []
+                }));
+                setReviews(reviewsWithSortedReplies);
+            }
 
         } catch (error) {
             console.error("Erro:", error);
@@ -127,6 +154,11 @@ export default function VenueDetail() {
 
     const showGamification = (venue.coin_balance || 0) > 0;
 
+    // Calcula nota se tiver reviews locais, senão usa a do banco
+    const displayRating = reviews.length > 0
+        ? (reviews.reduce((acc, r) => acc + r.rating, 0) / reviews.length).toFixed(1)
+        : (venue.rating || 0).toFixed(1);
+
     return (
         <div className="min-h-screen bg-gray-50 pb-32 font-sans relative">
             <div className="relative h-56 md:h-72 w-full bg-gray-200">
@@ -153,15 +185,18 @@ export default function VenueDetail() {
                     </Badge>
                 </div>
                 <div className="flex items-center gap-4 text-sm text-gray-500 mb-4">
-                    <span className="flex items-center gap-1 font-medium text-gray-800"><Star className="w-4 h-4 fill-amber-400 text-amber-400" /> {venue.rating || 4.5}</span>
+                    <span className="flex items-center gap-1 font-medium text-gray-800">
+                        <Star className="w-4 h-4 fill-amber-400 text-amber-400" /> {displayRating} <span className="text-gray-400 font-normal">({reviews.length} avaliações)</span>
+                    </span>
                     <span className="flex items-center gap-1"><span className="w-1 h-1 rounded-full bg-gray-300" /> {venue.category}</span>
                 </div>
             </div>
 
             <Tabs defaultValue="menu" className="w-full mt-2">
                 <div className="bg-white border-b sticky top-0 z-10">
-                    <TabsList className="w-full justify-start h-12 bg-transparent p-0 px-5 gap-6 rounded-none">
+                    <TabsList className="w-full justify-start h-12 bg-transparent p-0 px-5 gap-6 rounded-none overflow-x-auto no-scrollbar">
                         <TabsTrigger value="menu" className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-2 py-3 text-gray-500 data-[state=active]:text-primary font-medium text-base">Cardápio</TabsTrigger>
+                        <TabsTrigger value="reviews" className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-2 py-3 text-gray-500 data-[state=active]:text-primary font-medium text-base">Avaliações</TabsTrigger>
                         <TabsTrigger value="about" className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-2 py-3 text-gray-500 data-[state=active]:text-primary font-medium text-base">Sobre</TabsTrigger>
                     </TabsList>
                 </div>
@@ -195,6 +230,77 @@ export default function VenueDetail() {
                                 </div>
                             </div>
                         ))
+                    )}
+                </TabsContent>
+
+                {/* ABA AVALIAÇÕES */}
+                <TabsContent value="reviews" className="bg-white min-h-[50vh]">
+                    {reviews.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+                            <Star className="w-12 h-12 mb-3 opacity-20" />
+                            <p className="font-medium">Nenhuma avaliação ainda.</p>
+                            <p className="text-sm">Seja o primeiro a pedir!</p>
+                        </div>
+                    ) : (
+                        <div className="divide-y divide-gray-100">
+                            {reviews.map((review) => (
+                                <div key={review.id} className="p-5 flex gap-4 hover:bg-gray-50 transition-colors">
+                                    <Avatar className="w-10 h-10 border border-gray-100">
+                                        <AvatarImage src={review.profiles?.avatar_url} />
+                                        <AvatarFallback><User className="w-5 h-5 text-gray-400" /></AvatarFallback>
+                                    </Avatar>
+                                    <div className="flex-1 space-y-2">
+                                        {/* Cabeçalho da Review */}
+                                        <div className="flex justify-between items-start">
+                                            <span className="font-bold text-gray-900 text-sm">{review.profiles?.display_name || "Usuário"}</span>
+                                            <span className="text-xs text-gray-400">{new Date(review.created_at).toLocaleDateString('pt-BR')}</span>
+                                        </div>
+
+                                        <div className="flex text-amber-400 mb-1">
+                                            {[...Array(5)].map((_, i) => (
+                                                <Star key={i} className={`w-3 h-3 ${i < review.rating ? "fill-current" : "text-gray-200 fill-gray-200"}`} />
+                                            ))}
+                                        </div>
+
+                                        {review.comment && (
+                                            <p className="text-sm text-gray-600 leading-relaxed bg-gray-50 p-3 rounded-lg rounded-tl-none italic">
+                                                "{review.comment}"
+                                            </p>
+                                        )}
+
+                                        {review.tags && review.tags.length > 0 && (
+                                            <div className="flex flex-wrap gap-1 mt-1">
+                                                {review.tags.map((tag: string) => (
+                                                    <span key={tag} className="text-[10px] px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full border border-gray-200">
+                                                        {tag}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        {/* THREAD DE RESPOSTAS */}
+                                        {review.replies && review.replies.length > 0 && (
+                                            <div className="mt-4 pl-3 border-l-2 border-gray-100 space-y-3">
+                                                {review.replies.map((reply: any) => {
+                                                    const isOwner = reply.user_id === venue.owner_id;
+                                                    return (
+                                                        <div key={reply.id} className={`p-3 rounded-r-lg rounded-bl-lg text-sm ${isOwner ? 'bg-primary/5' : 'bg-gray-50'}`}>
+                                                            <div className="flex items-center justify-between mb-1">
+                                                                <span className={`font-bold text-xs ${isOwner ? 'text-primary' : 'text-gray-700'}`}>
+                                                                    {isOwner ? venue.name : "Cliente"}
+                                                                </span>
+                                                                <span className="text-[10px] text-gray-400">{new Date(reply.created_at).toLocaleDateString('pt-BR')}</span>
+                                                            </div>
+                                                            <p className="text-gray-600">{reply.content}</p>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     )}
                 </TabsContent>
 

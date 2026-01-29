@@ -13,6 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Separator } from "@/components/ui/separator";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
+import { DeliveryReviewModal } from "@/components/DeliveryReviewModal";
 
 const STEPS = [
     { key: 'pending', label: 'Pedido Aceito', desc: 'Restaurante recebeu seu pedido', icon: Clock },
@@ -54,6 +55,9 @@ export default function OrderTracking() {
     const [loading, setLoading] = useState(true);
     const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
+    // Novo estado para o Review
+    const [showReviewModal, setShowReviewModal] = useState(false);
+
     // --- ESTADOS DO MAPA ---
     const [isMapOpen, setIsMapOpen] = useState(false);
     const [courierLocation, setCourierLocation] = useState<{ lat: number; lng: number } | null>(null);
@@ -82,6 +86,19 @@ export default function OrderTracking() {
             }
             setOrder(data);
 
+            // Verifica se deve abrir avaliação (Entregue e sem avaliação de driver)
+            if (data.status === 'delivered') {
+                const { count } = await supabase
+                    .from('reviews')
+                    .select('*', { count: 'exact', head: true })
+                    .eq('order_id', id)
+                    .eq('target_type', 'driver');
+
+                if (count === 0) {
+                    setShowReviewModal(true);
+                }
+            }
+
             if (data.couriers?.current_lat && data.couriers?.current_lng) {
                 setCourierLocation({ lat: data.couriers.current_lat, lng: data.couriers.current_lng });
             }
@@ -92,7 +109,7 @@ export default function OrderTracking() {
 
         const channelOrder = supabase.channel(`tracking_${id}`)
             .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders', filter: `id=eq.${id}` }, async (payload) => {
-                fetchOrder();
+                fetchOrder(); // Recarrega para garantir que a lógica de review rode
                 if (payload.new.status !== order?.status) {
                     toast({ title: "Status Atualizado!", className: "bg-blue-600 text-white" });
                 }
@@ -167,12 +184,9 @@ export default function OrderTracking() {
     const isDelivered = order.status === 'delivered';
 
     // --- CÁLCULOS MATEMÁTICOS CORRIGIDOS ---
-    // Soma os itens individualmente para garantir que o subtotal esteja correto
     const itemsSubtotal = order.order_items?.reduce((acc: number, item: any) => acc + (Number(item.total_price) || 0), 0) || 0;
     const deliveryFee = Number(order.delivery_fee) || 0;
-    const discountAmount = Number(order.discount_amount) || 0; // Pega o desconto do banco
-
-    // O total visual é a soma do Subtotal + Frete - Desconto
+    const discountAmount = Number(order.discount_amount) || 0;
     const visualTotal = (itemsSubtotal + deliveryFee) - discountAmount;
 
     if (isCanceled) {
@@ -412,6 +426,15 @@ export default function OrderTracking() {
                     </div>
                 </DrawerContent>
             </Drawer>
+
+            {/* Modal de Avaliação Logística */}
+            <DeliveryReviewModal
+                isOpen={showReviewModal}
+                onClose={() => setShowReviewModal(false)}
+                orderId={id || ""}
+                courierId={order?.courier_id}
+                courierName={order?.couriers?.name || "Entregador"}
+            />
         </div>
     );
 }
