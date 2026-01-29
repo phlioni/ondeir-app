@@ -171,16 +171,24 @@ export default function Index() {
         };
         await fetchBalance();
 
+        // Listener de Perfil (Coins)
         profileSubscription = supabase
           .channel(`profile_changes_${userId}`)
           .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${userId}` }, (payload: any) => {
             if (payload.new && payload.new.coin_balance !== undefined) setUserCoins(payload.new.coin_balance);
           }).subscribe();
 
+        // Listener de Pedidos (Atualizar Coins ao Finalizar OU CANCELAR)
         orderSubscription = supabase
           .channel(`order_changes_${userId}`)
           .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders', filter: `user_id=eq.${userId}` }, (payload: any) => {
-            if (payload.new.status === 'delivered') setTimeout(fetchBalance, 1000);
+            // CORREÇÃO: Verifica se foi entregue OU cancelado para atualizar o saldo
+            // Usamos setTimeout para garantir que a trigger do banco já tenha rodado
+            const status = payload.new.status;
+            if (status === 'delivered' || status === 'canceled') {
+              console.log("Pedido finalizado/cancelado, atualizando saldo...");
+              setTimeout(fetchBalance, 1500);
+            }
           }).subscribe();
       }
 
@@ -482,7 +490,6 @@ export default function Index() {
 
                   const isOpen = isProduct ? checkIsOpen(item.market?.opening_hours) : checkIsOpen(item.opening_hours);
 
-                  // AGORA USAMOS A FUNÇÃO ATUALIZADA DO mapStyles QUE MUDA A COR SE isOpen=false
                   const icon = getMarkerIcon(category || 'Default', isOpen);
 
                   if (!lat || !lng) return null;
@@ -553,7 +560,7 @@ export default function Index() {
                   </p>
                 )}
 
-                {/* AVISO DE FECHADO: Movido para baixo do texto principal, visível e limpo */}
+                {/* AVISO DE FECHADO */}
                 {!(selectedPlace.type === 'product' ? checkIsOpen(selectedPlace.market?.opening_hours) : checkIsOpen(selectedPlace.opening_hours)) && (
                   <div className="mt-1 flex items-center gap-1 text-red-600 font-bold text-xs bg-red-50 w-fit px-2 py-0.5 rounded border border-red-100 animate-in fade-in">
                     <Clock className="w-3 h-3" /> Fechado Agora
