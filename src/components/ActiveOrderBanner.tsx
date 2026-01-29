@@ -18,8 +18,10 @@ export function ActiveOrderBanner() {
             if (!session) return;
             userId = session.user.id;
 
+            // 1. Carga Inicial: Busca apenas pedidos em andamento
             await fetchActiveOrder(userId);
 
+            // 2. Monitoramento em Tempo Real
             const channel = supabase.channel('any_order_change')
                 .on(
                     'postgres_changes',
@@ -29,8 +31,14 @@ export function ActiveOrderBanner() {
                         table: 'orders',
                         filter: `user_id=eq.${userId}`
                     },
-                    (payload) => {
-                        fetchActiveOrder(userId!);
+                    (payload: any) => {
+                        // Se o pedido acabou de ser entregue NA MINHA FRENTE (Realtime)
+                        if (payload.new.status === 'delivered') {
+                            fetchDeliveredOrderForCelebration(payload.new.id);
+                        } else {
+                            // Se mudou para qualquer outro status (preparing, ready), atualiza normal
+                            fetchActiveOrder(userId!);
+                        }
                     }
                 )
                 .subscribe();
@@ -49,32 +57,56 @@ export function ActiveOrderBanner() {
             const timer = setTimeout(() => {
                 setIsVisible(false);
                 setActiveOrder(null);
-            }, 5000); // 5 Segundos de exibição da mensagem de sucesso
+            }, 5000); // 5 Segundos de comemoração e tchau
 
             return () => clearTimeout(timer);
         }
     }, [activeOrder?.status]);
 
+    // Função Principal: Busca SÓ pedidos ativos (para o Refresh)
     const fetchActiveOrder = async (uid: string) => {
         const { data } = await supabase
             .from('orders')
-            .select('id, status, delivery_code, markets(name)')
+            .select('id, status, delivery_code, markets(name), created_at')
             .eq('user_id', uid)
-            // IMPORTANTE: Agora incluímos 'delivered' na busca para poder mostrar a animação
-            .in('status', ['pending', 'preparing', 'ready', 'delivered'])
+            // AQUI ESTÁ A CORREÇÃO: Removemos 'delivered' da busca inicial
+            .in('status', ['pending', 'preparing', 'ready'])
             .order('created_at', { ascending: false })
             .limit(1)
             .maybeSingle();
 
         if (data) {
-            // Se o pedido já foi entregue há muito tempo (ex: usuário recarregou a página), não mostramos.
-            // Mas se acabou de mudar via realtime, mostramos.
-            // (Para simplificar, mostramos sempre e o useEffect acima esconde em 5s)
+            // Filtro de segurança: Pedidos "presos" há mais de 24h não aparecem
+            const createdAt = new Date(data.created_at).getTime();
+            const now = new Date().getTime();
+            const hoursSinceCreated = (now - createdAt) / 1000 / 60 / 60;
+
+            if (hoursSinceCreated > 24) {
+                setIsVisible(false);
+                return;
+            }
+
             setActiveOrder(data);
             setIsVisible(true);
         } else {
+            // Se não tem pedido ativo, esconde o banner
             setIsVisible(false);
             setActiveOrder(null);
+        }
+    };
+
+    // Função Auxiliar: Busca pedido entregue APENAS para a animação de realtime
+    const fetchDeliveredOrderForCelebration = async (orderId: string) => {
+        const { data } = await supabase
+            .from('orders')
+            .select('id, status, delivery_code, markets(name)')
+            .eq('id', orderId)
+            .single();
+
+        if (data) {
+            setActiveOrder(data);
+            setIsVisible(true);
+            // O useEffect lá em cima vai cuidar de fechar isso em 5 segundos
         }
     };
 
@@ -94,7 +126,6 @@ export function ActiveOrderBanner() {
                 icon: Bike, label: "Saiu para entrega",
                 color: "text-indigo-600", bg: "bg-indigo-100", border: "border-l-indigo-500", animate: "animate-bounce"
             };
-            // NOVO STATUS: ENTREGUE
             case 'delivered': return {
                 icon: CheckCircle2, label: "Pedido Entregue! Bom apetite 😋",
                 color: "text-green-700", bg: "bg-green-100", border: "border-l-green-600", animate: "animate-bounce"
@@ -121,7 +152,6 @@ export function ActiveOrderBanner() {
                             {info.label}
                         </span>
 
-                        {/* Lógica de Exibição de Texto Auxiliar */}
                         {activeOrder.status === 'ready' ? (
                             <span className="text-xs text-primary font-black flex items-center gap-1 mt-0.5 animate-pulse">
                                 <Hash className="w-3 h-3" /> CÓDIGO: {activeOrder.delivery_code}

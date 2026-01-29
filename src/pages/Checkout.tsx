@@ -8,9 +8,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, MapPin, Wallet, Bike, Store, Loader2, Plus, Clock, DollarSign } from "lucide-react";
+import { ArrowLeft, MapPin, Wallet, Bike, Store, Loader2, Plus, Clock, Coins } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 
 export default function Checkout() {
     const { items, total: cartSubtotal, marketId, clearCart } = useCart();
@@ -22,6 +24,11 @@ export default function Checkout() {
     const [loading, setLoading] = useState(true);
     const [submitting, setSubmitting] = useState(false);
     const [marketConfig, setMarketConfig] = useState<any>(null);
+
+    // Coins Logic
+    const [userCoins, setUserCoins] = useState(0);
+    const [useCoins, setUseCoins] = useState(false);
+    const [coinsToUse, setCoinsToUse] = useState(0);
 
     // Dados do Pedido
     const [orderType, setOrderType] = useState("delivery");
@@ -42,7 +49,7 @@ export default function Checkout() {
                 return;
             }
             setUser(session.user);
-            fetchAddresses(session.user.id);
+            fetchUserData(session.user.id);
             fetchMarketConfig();
         };
         checkAuth();
@@ -52,18 +59,23 @@ export default function Checkout() {
         if (items.length === 0) navigate("/");
     }, [items, navigate]);
 
-    const fetchAddresses = async (userId: string) => {
-        const { data } = await supabase.from('user_addresses').select('*').eq('user_id', userId).order('created_at', { ascending: false });
-        if (data && data.length > 0) {
-            setSavedAddresses(data);
-            setSelectedAddressId(data[0].id);
+    const fetchUserData = async (userId: string) => {
+        const { data: addrData } = await supabase.from('user_addresses').select('*').eq('user_id', userId).order('created_at', { ascending: false });
+        if (addrData && addrData.length > 0) {
+            setSavedAddresses(addrData);
+            setSelectedAddressId(addrData[0].id);
         }
+
+        const { data: profile } = await supabase.from('profiles').select('coin_balance').eq('id', userId).single();
+        if (profile) setUserCoins(profile.coin_balance || 0);
+
         setLoading(false);
     };
 
     const fetchMarketConfig = async () => {
         if (!marketId) return;
-        const { data } = await supabase.from('markets').select('delivery_fee, delivery_time_min, delivery_time_max').eq('id', marketId).single();
+        // AGORA BUSCAMOS O COIN_BALANCE DO RESTAURANTE
+        const { data } = await supabase.from('markets').select('delivery_fee, delivery_time_min, delivery_time_max, coin_balance').eq('id', marketId).single();
         if (data) setMarketConfig(data);
     };
 
@@ -86,6 +98,26 @@ export default function Checkout() {
         }
     };
 
+    // Cálculos Financeiros
+    const currentFee = orderType === 'delivery' ? (marketConfig?.delivery_fee || 0) : 0;
+    const coinValue = 0.05;
+    const maxDiscount = cartSubtotal;
+    const maxCoinsAllowed = Math.floor(maxDiscount / coinValue);
+
+    // Regra de Negócio: O restaurante precisa ter saldo > 0 para aceitar coins
+    const marketAcceptsCoins = (marketConfig?.coin_balance || 0) > 0;
+
+    useEffect(() => {
+        if (useCoins) {
+            setCoinsToUse(Math.min(userCoins, maxCoinsAllowed));
+        } else {
+            setCoinsToUse(0);
+        }
+    }, [useCoins, userCoins, maxCoinsAllowed]);
+
+    const discountValue = coinsToUse * coinValue;
+    const finalTotal = Math.max(0, (cartSubtotal + currentFee) - discountValue);
+
     const handlePlaceOrder = async () => {
         if (orderType === "delivery" && !selectedAddressId) {
             return toast({ title: "Selecione um endereço", variant: "destructive" });
@@ -95,57 +127,77 @@ export default function Checkout() {
         try {
             const addr = savedAddresses.find(a => a.id === selectedAddressId) || {};
 
-            // Cálculos Finais
-            const fee = orderType === 'delivery' ? (marketConfig?.delivery_fee || 0) : 0;
-            const finalTotal = cartSubtotal + fee;
+            let orderId;
 
-            // 1. Criar o Pedido
-            const { data: order, error: orderError } = await supabase.from("orders").insert({
-                market_id: marketId,
-                user_id: user.id,
-                customer_name: user.email?.split('@')[0],
-                customer_phone: "",
-                order_type: orderType,
-                status: "pending",
-                payment_status: "pending",
-                payment_method: paymentMethod,
+            // ROTA A: Com uso de Coins (RPC)
+            if (useCoins && coinsToUse > 0) {
+                const { data, error } = await supabase.rpc('create_order_with_coins', {
+                    p_market_id: marketId,
+                    p_user_id: user.id,
+                    p_items: items,
+                    p_subtotal: cartSubtotal,
+                    p_delivery_fee: currentFee,
+                    p_coins_to_use: coinsToUse,
+                    p_address_data: addr,
+                    p_order_type: orderType,
+                    p_payment_method: paymentMethod
+                });
 
-                // Valores
-                total_amount: finalTotal,
-                delivery_fee: fee,
-                estimated_min: marketConfig?.delivery_time_min,
-                estimated_max: marketConfig?.delivery_time_max,
+                if (error) throw error;
+                orderId = data;
 
-                // Endereço Snapshot
-                address_street: addr.street,
-                address_number: addr.number,
-                address_neighborhood: addr.neighborhood,
-                address_complement: addr.complement,
-                change_for: paymentMethod === 'cash' ? Number(changeFor) : null
-            }).select().single();
+            } else {
+                // ROTA B: Padrão (Sem Coins)
+                const { data: order, error: orderError } = await supabase.from("orders").insert({
+                    market_id: marketId,
+                    user_id: user.id,
+                    customer_name: user.email?.split('@')[0],
+                    customer_phone: "",
+                    order_type: orderType,
+                    status: "pending",
+                    payment_status: "pending",
+                    payment_method: paymentMethod,
+                    total_amount: finalTotal,
+                    delivery_fee: currentFee,
+                    estimated_min: marketConfig?.delivery_time_min,
+                    estimated_max: marketConfig?.delivery_time_max,
+                    address_street: addr.street,
+                    address_number: addr.number,
+                    address_neighborhood: addr.neighborhood,
+                    address_complement: addr.complement,
+                    change_for: paymentMethod === 'cash' ? Number(changeFor) : null,
+                    coins_used: 0,
+                    discount_amount: 0
+                }).select().single();
 
-            if (orderError) throw orderError;
+                if (orderError) throw orderError;
+                orderId = order.id;
+            }
 
-            // 2. Inserir Itens
-            const orderItems = items.map(item => ({
-                order_id: order.id,
-                market_id: marketId,
-                menu_item_id: item.id,
-                name: item.name,
-                quantity: item.quantity,
-                unit_price: item.price,
-                total_price: item.price * item.quantity,
-                notes: item.notes
-            }));
+            if (orderId) {
+                const orderItems = items.map(item => ({
+                    order_id: orderId,
+                    market_id: marketId,
+                    menu_item_id: item.id,
+                    name: item.name,
+                    quantity: item.quantity,
+                    unit_price: item.price,
+                    total_price: item.price * item.quantity,
+                    notes: item.notes
+                }));
 
-            const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
-            if (itemsError) throw itemsError;
+                const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
+                if (itemsError) {
+                    console.error("Erro ao inserir itens, mas pedido criado:", itemsError);
+                }
+            }
 
             clearCart();
             toast({ title: "Pedido Enviado!", className: "bg-green-600 text-white" });
-            navigate(`/order/${order.id}`);
+            navigate(`/order/${orderId}`);
 
         } catch (error: any) {
+            console.error(error);
             toast({ title: "Erro ao enviar", description: error.message, variant: "destructive" });
         } finally {
             setSubmitting(false);
@@ -153,10 +205,6 @@ export default function Checkout() {
     };
 
     if (loading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-primary" /></div>;
-
-    // Totais para exibição
-    const currentFee = orderType === 'delivery' ? (marketConfig?.delivery_fee || 0) : 0;
-    const currentTotal = cartSubtotal + currentFee;
 
     return (
         <div className="min-h-screen bg-gray-50 pb-32 font-sans">
@@ -205,17 +253,62 @@ export default function Checkout() {
                     </TabsContent>
                 </Tabs>
 
+                {/* SEÇÃO DE COINS - SÓ APARECE SE USER TEM SALDO E RESTAURANTE TEM SALDO */}
+                {userCoins > 0 && marketAcceptsCoins && (
+                    <section className="space-y-3">
+                        <div className="flex items-center justify-between">
+                            <h2 className="text-sm font-bold text-gray-500 uppercase flex items-center gap-2">
+                                <Coins className="w-4 h-4 text-yellow-500" /> Usar Coins
+                            </h2>
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs font-medium text-gray-500">Saldo: {userCoins}</span>
+                                <Switch checked={useCoins} onCheckedChange={setUseCoins} />
+                            </div>
+                        </div>
+
+                        {useCoins && (
+                            <Card className="border-yellow-200 bg-yellow-50/50 shadow-sm animate-in slide-in-from-top-2">
+                                <CardContent className="p-4 space-y-4">
+                                    <div className="flex justify-between items-center text-sm font-medium">
+                                        <span>Usar: {coinsToUse} coins</span>
+                                        <span className="text-green-600 font-bold">- R$ {discountValue.toFixed(2)}</span>
+                                    </div>
+                                    <Slider
+                                        defaultValue={[coinsToUse]}
+                                        max={Math.min(userCoins, maxCoinsAllowed)}
+                                        step={10}
+                                        value={[coinsToUse]}
+                                        onValueChange={(val) => setCoinsToUse(val[0])}
+                                        className="py-2"
+                                    />
+                                    <p className="text-xs text-gray-500 text-center">
+                                        Desconto máximo permitido: R$ {maxDiscount.toFixed(2)}
+                                    </p>
+                                </CardContent>
+                            </Card>
+                        )}
+                    </section>
+                )}
+
                 <section className="space-y-3">
                     <h2 className="text-sm font-bold text-gray-500 uppercase flex items-center gap-2"><Wallet className="w-4 h-4" /> Pagamento</h2>
                     <Card className="border-none shadow-sm">
                         <CardContent className="p-4">
                             <RadioGroup value={paymentMethod} onValueChange={setPaymentMethod} className="space-y-3">
-                                <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="credit" id="r1" /><Label htmlFor="r1" className="cursor-pointer flex-1">Crédito (Entrega)</Label></div>
-                                <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="debit" id="r2" /><Label htmlFor="r2" className="cursor-pointer flex-1">Débito (Entrega)</Label></div>
-                                <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="pix" id="r3" /><Label htmlFor="r3" className="cursor-pointer flex-1">Pix (Entrega)</Label></div>
-                                <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="cash" id="r4" /><Label htmlFor="r4" className="cursor-pointer flex-1">Dinheiro</Label></div>
+                                {finalTotal > 0 ? (
+                                    <>
+                                        <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="credit" id="r1" /><Label htmlFor="r1" className="cursor-pointer flex-1">Crédito (Entrega)</Label></div>
+                                        <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="debit" id="r2" /><Label htmlFor="r2" className="cursor-pointer flex-1">Débito (Entrega)</Label></div>
+                                        <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="pix" id="r3" /><Label htmlFor="r3" className="cursor-pointer flex-1">Pix (Entrega)</Label></div>
+                                        <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="cash" id="r4" /><Label htmlFor="r4" className="cursor-pointer flex-1">Dinheiro</Label></div>
+                                    </>
+                                ) : (
+                                    <div className="text-center text-green-600 font-bold py-2 bg-green-50 rounded-lg">
+                                        Pago integralmente com Coins! 🎉
+                                    </div>
+                                )}
                             </RadioGroup>
-                            {paymentMethod === 'cash' && (<div className="mt-3"><Label>Troco para quanto?</Label><Input type="number" placeholder="Ex: 50" value={changeFor} onChange={e => setChangeFor(e.target.value)} className="mt-1" /></div>)}
+                            {paymentMethod === 'cash' && finalTotal > 0 && (<div className="mt-3"><Label>Troco para quanto?</Label><Input type="number" placeholder="Ex: 50" value={changeFor} onChange={e => setChangeFor(e.target.value)} className="mt-1" /></div>)}
                         </CardContent>
                     </Card>
                 </section>
@@ -229,11 +322,17 @@ export default function Checkout() {
                             <span>R$ {currentFee.toFixed(2)}</span>
                         </div>
                     )}
+                    {discountValue > 0 && (
+                        <div className="flex justify-between text-green-600 font-bold">
+                            <span className="flex items-center gap-1"><Coins className="w-3 h-3" /> Desconto Coins</span>
+                            <span>- R$ {discountValue.toFixed(2)}</span>
+                        </div>
+                    )}
                     <div className="flex justify-between text-gray-600">
                         <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> Tempo Estimado</span>
                         <span>{marketConfig?.delivery_time_min}-{marketConfig?.delivery_time_max} min</span>
                     </div>
-                    <div className="flex justify-between font-bold text-lg pt-2 border-t mt-2"><span>Total</span><span>R$ {currentTotal.toFixed(2)}</span></div>
+                    <div className="flex justify-between font-bold text-lg pt-2 border-t mt-2"><span>Total</span><span>R$ {finalTotal.toFixed(2)}</span></div>
                 </div>
 
                 <Button className="w-full h-14 text-lg font-bold bg-green-600 hover:bg-green-700 shadow-xl rounded-xl" onClick={handlePlaceOrder} disabled={submitting}>

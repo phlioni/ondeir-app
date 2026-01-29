@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { GoogleMap, useJsApiLoader, MarkerF, MarkerClustererF } from "@react-google-maps/api";
-import { Search, Mic, Star, ArrowRight, Navigation, DollarSign, Trophy, X, MapPin, Store } from "lucide-react";
+import { Search, Mic, Star, ArrowRight, Navigation, DollarSign, Trophy, X, MapPin, Store, Coins } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
@@ -70,6 +70,7 @@ export default function Index() {
   const [filteredPlaces, setFilteredPlaces] = useState<any[]>([]);
   const [selectedPlace, setSelectedPlace] = useState<any | null>(null);
   const [activeFilter, setActiveFilter] = useState("all");
+  const [userCoins, setUserCoins] = useState<number | null>(null); // NOVO: Saldo de Coins
 
   // --- BUSCA ---
   const [query, setQuery] = useState("");
@@ -124,12 +125,19 @@ export default function Index() {
     return () => clearTimeout(timer);
   }, []);
 
-  // 2. INICIALIZAÇÃO
+  // 2. INICIALIZAÇÃO E COINS
   useEffect(() => {
     let isMounted = true;
     const initialize = async () => {
       setLoadingLocation(true);
       await fetchNearbyPlaces();
+
+      // Busca Coins do Usuário
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        const { data: profile } = await supabase.from('profiles').select('coin_balance').eq('id', session.user.id).single();
+        if (profile) setUserCoins(profile.coin_balance);
+      }
 
       if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
@@ -220,14 +228,9 @@ export default function Index() {
     }
   };
 
-  // --- NAVEGAÇÃO SEGURA (CORRIGIDA) ---
   const navigateToPlace = (item: any) => {
-    // CASO 1: É um PRODUTO (Lanche, Bebida, etc)
     if (item.type === 'product') {
-      // Navega para o restaurante dono do produto
-      // E passa o ID do produto no 'state' para abrirmos o drawer lá
       const marketId = item.market_id || item.market?.id;
-
       if (marketId) {
         navigate(`/place/${marketId}`, { state: { openProductId: item.id } });
       } else {
@@ -236,10 +239,7 @@ export default function Index() {
       }
       return;
     }
-
-    // CASO 2: É UM RESTAURANTE (Venue)
     const targetId = item.market_id || (item.type === 'venue' ? item.id : null);
-
     if (targetId) {
       navigate(`/place/${targetId}`);
     } else {
@@ -347,8 +347,22 @@ export default function Index() {
       {/* HEADER */}
       <div className="absolute top-0 left-0 right-0 z-30 p-4 bg-gradient-to-b from-white/90 to-transparent pointer-events-none">
         <div className="flex justify-between items-start pointer-events-auto">
-          <AppMenu />
-          <div className="flex gap-2 overflow-x-auto no-scrollbar max-w-[75%] pb-2 px-1">
+          <div className="flex gap-2">
+            <AppMenu />
+
+            {/* NOVO: BANNER DE COINS */}
+            {userCoins !== null && userCoins > 0 && (
+              <div
+                className="flex items-center gap-1.5 bg-yellow-400 text-yellow-900 px-3 py-2 rounded-full shadow-md cursor-pointer animate-in fade-in slide-in-from-top-2"
+                onClick={() => navigate('/profile')}
+              >
+                <Coins className="w-4 h-4 fill-yellow-100 text-yellow-800" />
+                <span className="text-xs font-bold">{userCoins}</span>
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-2 overflow-x-auto no-scrollbar max-w-[65%] pb-2 px-1">
             {QUICK_FILTERS.map((filter) => (
               <button
                 key={filter.value}
@@ -374,7 +388,15 @@ export default function Index() {
           center={center}
           zoom={14}
           onLoad={onLoad}
-          options={{ disableDefaultUI: true, zoomControl: false, styles: mapStyles, minZoom: 4, maxZoom: 20 }}
+          // AQUI: gestureHandling: 'greedy' remove a necessidade de 2 dedos
+          options={{
+            disableDefaultUI: true,
+            zoomControl: false,
+            styles: mapStyles,
+            minZoom: 4,
+            maxZoom: 20,
+            gestureHandling: 'greedy'
+          }}
         >
           {userLocation && userLocation.lat && userLocation.lng && (
             <MarkerF position={userLocation} zIndex={999} icon={{ path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: "#3B82F6", fillOpacity: 1, strokeColor: "white", strokeWeight: 3 }} />
