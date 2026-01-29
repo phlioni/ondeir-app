@@ -3,12 +3,15 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Loader2, ChefHat, Bike, Clock, ChevronRight, Hash, CheckCircle2 } from "lucide-react";
+import { Loader2, ChefHat, Bike, Clock, ChevronRight, Hash, CheckCircle2, Coins, PackageCheck } from "lucide-react";
 
 export function ActiveOrderBanner() {
     const navigate = useNavigate();
     const [activeOrder, setActiveOrder] = useState<any>(null);
     const [isVisible, setIsVisible] = useState(false);
+
+    // Estado para o Banner de Recompensa (Coins)
+    const [rewardData, setRewardData] = useState<{ coins: number } | null>(null);
 
     useEffect(() => {
         let userId: string | undefined;
@@ -18,7 +21,7 @@ export function ActiveOrderBanner() {
             if (!session) return;
             userId = session.user.id;
 
-            // 1. Carga Inicial: Busca apenas pedidos em andamento
+            // 1. Carga Inicial
             await fetchActiveOrder(userId);
 
             // 2. Monitoramento em Tempo Real
@@ -32,11 +35,9 @@ export function ActiveOrderBanner() {
                         filter: `user_id=eq.${userId}`
                     },
                     (payload: any) => {
-                        // Se o pedido acabou de ser entregue NA MINHA FRENTE (Realtime)
                         if (payload.new.status === 'delivered') {
                             fetchDeliveredOrderForCelebration(payload.new.id);
                         } else {
-                            // Se mudou para qualquer outro status (preparing, ready), atualiza normal
                             fetchActiveOrder(userId!);
                         }
                     }
@@ -51,32 +52,41 @@ export function ActiveOrderBanner() {
         setupRealtime();
     }, []);
 
-    // EFEITO: Fecha o banner automaticamente após 5 segundos se for ENTREGUE
+    // EFEITO: Sequência de Encerramento
     useEffect(() => {
         if (activeOrder?.status === 'delivered') {
-            const timer = setTimeout(() => {
+            const timer1 = setTimeout(() => {
+                const earned = Math.floor(Number(activeOrder.total_amount || 0));
+                if (earned > 0) {
+                    setRewardData({ coins: earned });
+                } else {
+                    setIsVisible(false);
+                    setActiveOrder(null);
+                }
+            }, 3000);
+
+            const timer2 = setTimeout(() => {
+                setRewardData(null);
                 setIsVisible(false);
                 setActiveOrder(null);
-            }, 5000); // 5 Segundos de comemoração e tchau
+            }, 7000);
 
-            return () => clearTimeout(timer);
+            return () => { clearTimeout(timer1); clearTimeout(timer2); };
         }
     }, [activeOrder?.status]);
 
-    // Função Principal: Busca SÓ pedidos ativos (para o Refresh)
     const fetchActiveOrder = async (uid: string) => {
         const { data } = await supabase
             .from('orders')
             .select('id, status, delivery_code, markets(name), created_at')
             .eq('user_id', uid)
-            // AQUI ESTÁ A CORREÇÃO: Removemos 'delivered' da busca inicial
-            .in('status', ['pending', 'preparing', 'ready'])
+            // CORREÇÃO AQUI: Adicionado 'confirmed' para o banner não sumir quando a cozinha der ok
+            .in('status', ['pending', 'preparing', 'confirmed', 'ready'])
             .order('created_at', { ascending: false })
             .limit(1)
             .maybeSingle();
 
         if (data) {
-            // Filtro de segurança: Pedidos "presos" há mais de 24h não aparecem
             const createdAt = new Date(data.created_at).getTime();
             const now = new Date().getTime();
             const hoursSinceCreated = (now - createdAt) / 1000 / 60 / 60;
@@ -89,28 +99,49 @@ export function ActiveOrderBanner() {
             setActiveOrder(data);
             setIsVisible(true);
         } else {
-            // Se não tem pedido ativo, esconde o banner
             setIsVisible(false);
             setActiveOrder(null);
         }
     };
 
-    // Função Auxiliar: Busca pedido entregue APENAS para a animação de realtime
     const fetchDeliveredOrderForCelebration = async (orderId: string) => {
         const { data } = await supabase
             .from('orders')
-            .select('id, status, delivery_code, markets(name)')
+            .select('id, status, delivery_code, markets(name), total_amount')
             .eq('id', orderId)
             .single();
 
         if (data) {
             setActiveOrder(data);
             setIsVisible(true);
-            // O useEffect lá em cima vai cuidar de fechar isso em 5 segundos
         }
     };
 
-    if (!isVisible || !activeOrder) return null;
+    if (!isVisible) return null;
+
+    if (rewardData) {
+        return (
+            <div className="fixed top-28 left-4 right-4 z-50 animate-in zoom-in duration-500 fade-in">
+                <Card className="p-3 shadow-2xl border-l-4 border-l-yellow-400 bg-yellow-50 flex items-center justify-between cursor-pointer">
+                    <div className="flex items-center gap-3">
+                        <div className="w-12 h-12 rounded-full flex items-center justify-center shrink-0 bg-yellow-200 text-yellow-700 shadow-inner">
+                            <Coins className="w-6 h-6 animate-bounce" />
+                        </div>
+                        <div className="flex flex-col">
+                            <span className="font-black text-base text-yellow-900 leading-tight uppercase tracking-wide">
+                                Cashback!
+                            </span>
+                            <span className="text-sm text-yellow-800 font-medium">
+                                Você ganhou <span className="font-bold text-lg">+{rewardData.coins}</span> coins!
+                            </span>
+                        </div>
+                    </div>
+                </Card>
+            </div>
+        );
+    }
+
+    if (!activeOrder) return null;
 
     const getStatusInfo = (status: string) => {
         switch (status) {
@@ -121,6 +152,11 @@ export function ActiveOrderBanner() {
             case 'preparing': return {
                 icon: ChefHat, label: "Sendo preparado!",
                 color: "text-blue-600", bg: "bg-blue-100", border: "border-l-blue-500", animate: ""
+            };
+            // NOVO STATUS ADICIONADO
+            case 'confirmed': return {
+                icon: PackageCheck, label: "Pronto! Aguardando retirada.",
+                color: "text-emerald-600", bg: "bg-emerald-100", border: "border-l-emerald-500", animate: ""
             };
             case 'ready': return {
                 icon: Bike, label: "Saiu para entrega",

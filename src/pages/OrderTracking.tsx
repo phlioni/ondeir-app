@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { GoogleMap, useJsApiLoader, MarkerF } from "@react-google-maps/api";
 import {
     Loader2, CheckCircle2, Clock, ChefHat, Bike, Home,
-    ArrowLeft, Phone, HelpCircle, XCircle, Copy, ChevronDown, ChevronUp, MapPin, Hash, Car, Map as MapIcon, DollarSign
+    ArrowLeft, Phone, HelpCircle, XCircle, Copy, ChevronDown, ChevronUp, MapPin, Hash, Car, Map as MapIcon, DollarSign, Coins
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Separator } from "@/components/ui/separator";
@@ -170,8 +170,10 @@ export default function OrderTracking() {
     // Soma os itens individualmente para garantir que o subtotal esteja correto
     const itemsSubtotal = order.order_items?.reduce((acc: number, item: any) => acc + (Number(item.total_price) || 0), 0) || 0;
     const deliveryFee = Number(order.delivery_fee) || 0;
-    // O total visual é a soma do Subtotal + Frete (garante consistência visual)
-    const visualTotal = itemsSubtotal + deliveryFee;
+    const discountAmount = Number(order.discount_amount) || 0; // Pega o desconto do banco
+
+    // O total visual é a soma do Subtotal + Frete - Desconto
+    const visualTotal = (itemsSubtotal + deliveryFee) - discountAmount;
 
     if (isCanceled) {
         return (
@@ -353,13 +355,21 @@ export default function OrderTracking() {
                                     {/* Mostra a soma dos itens como Subtotal */}
                                     <span className="text-gray-900 font-medium">R$ {itemsSubtotal.toFixed(2)}</span>
                                 </div>
+
+                                {discountAmount > 0 && (
+                                    <div className="flex justify-between items-center text-green-600 font-bold">
+                                        <span className="flex items-center gap-1"><Coins className="w-3 h-3" /> Desconto</span>
+                                        <span>- R$ {discountAmount.toFixed(2)}</span>
+                                    </div>
+                                )}
+
                                 <div className="flex justify-between items-center">
                                     <span className="text-gray-600 font-medium text-sm flex items-center gap-1"><Bike className="w-3 h-3" /> Taxa de Entrega</span>
                                     <span className="text-gray-900 text-sm">R$ {deliveryFee.toFixed(2)}</span>
                                 </div>
                                 <div className="flex justify-between items-center pt-2 border-t">
                                     <span className="text-gray-600 font-bold">Total Pago</span>
-                                    {/* Mostra a soma visual (Subtotal + Frete) */}
+                                    {/* Mostra a soma visual (Subtotal + Frete - Desconto) */}
                                     <span className="font-bold text-xl text-green-600">R$ {visualTotal.toFixed(2)}</span>
                                 </div>
                                 <div className="text-xs text-gray-400 text-center pt-2">Pagamento via {order.payment_method === 'credit' ? 'Cartão de Crédito' : order.payment_method}</div>

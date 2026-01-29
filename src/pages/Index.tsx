@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { GoogleMap, useJsApiLoader, MarkerF, MarkerClustererF } from "@react-google-maps/api";
-import { Search, Mic, Star, ArrowRight, Navigation, DollarSign, Trophy, X, MapPin, Store, Coins } from "lucide-react";
+import { Search, Mic, Star, ArrowRight, Navigation, DollarSign, Trophy, X, MapPin, Store, Coins, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
@@ -48,6 +48,22 @@ const QUICK_FILTERS = [
   { label: "☕ Cafés", value: "Café" },
 ];
 
+// --- FUNÇÃO DE VERIFICAÇÃO DE HORÁRIO ---
+const checkIsOpen = (hours: any) => {
+  if (!hours) return true;
+  const days = ['domingo', 'segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado'];
+  const now = new Date();
+  const currentDay = days[now.getDay()];
+  const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+
+  const todaySchedule = hours[currentDay];
+  // Se não tiver horário ou estiver marcado como fechado
+  if (!todaySchedule || todaySchedule.closed) return false;
+
+  // Verifica se está dentro do intervalo
+  return currentTime >= todaySchedule.open && currentTime <= todaySchedule.close;
+};
+
 export default function Index() {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -70,7 +86,10 @@ export default function Index() {
   const [filteredPlaces, setFilteredPlaces] = useState<any[]>([]);
   const [selectedPlace, setSelectedPlace] = useState<any | null>(null);
   const [activeFilter, setActiveFilter] = useState("all");
-  const [userCoins, setUserCoins] = useState<number | null>(null); // NOVO: Saldo de Coins
+  const [userCoins, setUserCoins] = useState<number | null>(null);
+
+  // ESTADO PARA FORÇAR RE-RENDER A CADA MINUTO (Relógio)
+  const [ticker, setTicker] = useState(0);
 
   // --- BUSCA ---
   const [query, setQuery] = useState("");
@@ -80,7 +99,6 @@ export default function Index() {
   const [resultType, setResultType] = useState<'venues' | 'products'>('venues');
   const [sortOrder, setSortOrder] = useState<'default' | 'cheapest' | 'rated'>('default');
 
-  // --- FUNÇÃO AUXILIAR DE DISTÂNCIA ---
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
     if (!lat1 || !lon1 || !lat2 || !lon2) return "";
     const R = 6371;
@@ -125,19 +143,54 @@ export default function Index() {
     return () => clearTimeout(timer);
   }, []);
 
-  // 2. INICIALIZAÇÃO E COINS
+  // 2. RELÓGIO (Atualiza a cada 60s para checar se fechou/abriu por horário)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTicker(t => t + 1); // Força update do componente
+    }, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // 3. INICIALIZAÇÃO E REALTIME
   useEffect(() => {
     let isMounted = true;
+    let profileSubscription: any = null;
+    let orderSubscription: any = null;
+    let marketSubscription: any = null;
+
     const initialize = async () => {
       setLoadingLocation(true);
       await fetchNearbyPlaces();
 
-      // Busca Coins do Usuário
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
-        const { data: profile } = await supabase.from('profiles').select('coin_balance').eq('id', session.user.id).single();
-        if (profile) setUserCoins(profile.coin_balance);
+        const userId = session.user.id;
+        const fetchBalance = async () => {
+          const { data } = await supabase.from('profiles').select('coin_balance').eq('id', userId).single();
+          if (data) setUserCoins(data.coin_balance || 0);
+        };
+        await fetchBalance();
+
+        profileSubscription = supabase
+          .channel(`profile_changes_${userId}`)
+          .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${userId}` }, (payload: any) => {
+            if (payload.new && payload.new.coin_balance !== undefined) setUserCoins(payload.new.coin_balance);
+          }).subscribe();
+
+        orderSubscription = supabase
+          .channel(`order_changes_${userId}`)
+          .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders', filter: `user_id=eq.${userId}` }, (payload: any) => {
+            if (payload.new.status === 'delivered') setTimeout(fetchBalance, 1000);
+          }).subscribe();
       }
+
+      // IMPORTANTE: Escuta mudanças nas configurações dos restaurantes (ex: Dono fechou agora)
+      marketSubscription = supabase
+        .channel('market_updates_global')
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'markets' }, () => {
+          fetchNearbyPlaces(); // Recarrega os locais para pegar novo horário
+        })
+        .subscribe();
 
       if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
@@ -158,13 +211,21 @@ export default function Index() {
         if (isMounted) setLoadingLocation(false);
       }
     };
+
     initialize();
-    return () => { isMounted = false; };
+
+    return () => {
+      isMounted = false;
+      if (profileSubscription) supabase.removeChannel(profileSubscription);
+      if (orderSubscription) supabase.removeChannel(orderSubscription);
+      if (marketSubscription) supabase.removeChannel(marketSubscription);
+    };
   }, []);
 
   const fetchNearbyPlaces = async () => {
     try {
-      const { data } = await supabase.from('markets').select('*');
+      // Trazendo opening_hours
+      const { data } = await supabase.from('markets').select('*, opening_hours');
       if (data) {
         const venues = data.map(m => ({
           ...m,
@@ -284,8 +345,11 @@ export default function Index() {
       )
       : "";
 
+    // VERIFICA SE ESTÁ ABERTO (Isso roda a cada render do ticker)
+    const isOpen = item.type === 'product' ? checkIsOpen(item.market?.opening_hours) : checkIsOpen(item.opening_hours);
+
     return (
-      <div className="flex p-3 gap-3 w-full bg-white">
+      <div className={`flex p-3 gap-3 w-full bg-white ${!isOpen ? 'opacity-75' : ''}`}>
         <div
           className="w-20 h-20 rounded-xl bg-cover bg-center shrink-0 shadow-sm border border-gray-100"
           style={{ backgroundImage: `url(${imageSource})` }}
@@ -318,6 +382,14 @@ export default function Index() {
             ) : (
               <p className="text-xs text-gray-500 mt-1 line-clamp-2">{item.category} • {item.address}</p>
             )}
+
+            {/* AVISO DE FECHADO DISCRETO - LOGO APÓS O ENDEREÇO/DESCRIÇÃO */}
+            {!isOpen && (
+              <div className="mt-1 flex items-center gap-1 text-red-600 font-bold text-xs bg-red-50 w-fit px-2 py-0.5 rounded border border-red-100">
+                <Clock className="w-3 h-3" /> Fechado Agora
+              </div>
+            )}
+
           </div>
 
           <div className="flex items-end justify-between mt-2">
@@ -349,9 +421,7 @@ export default function Index() {
         <div className="flex justify-between items-start pointer-events-auto">
           <div className="flex gap-2">
             <AppMenu />
-
-            {/* NOVO: BANNER DE COINS */}
-            {userCoins !== null && userCoins > 0 && (
+            {userCoins !== null && (
               <div
                 className="flex items-center gap-1.5 bg-yellow-400 text-yellow-900 px-3 py-2 rounded-full shadow-md cursor-pointer animate-in fade-in slide-in-from-top-2"
                 onClick={() => navigate('/profile')}
@@ -388,7 +458,6 @@ export default function Index() {
           center={center}
           zoom={14}
           onLoad={onLoad}
-          // AQUI: gestureHandling: 'greedy' remove a necessidade de 2 dedos
           options={{
             disableDefaultUI: true,
             zoomControl: false,
@@ -411,13 +480,18 @@ export default function Index() {
                   const lng = isProduct ? item.market?.longitude : item.longitude;
                   const category = isProduct ? item.market?.category : item.category;
 
+                  const isOpen = isProduct ? checkIsOpen(item.market?.opening_hours) : checkIsOpen(item.opening_hours);
+
+                  // AGORA USAMOS A FUNÇÃO ATUALIZADA DO mapStyles QUE MUDA A COR SE isOpen=false
+                  const icon = getMarkerIcon(category || 'Default', isOpen);
+
                   if (!lat || !lng) return null;
 
                   return (
                     <MarkerF
                       key={isProduct ? `p-${item.id}` : `v-${item.id}`}
                       position={{ lat, lng }}
-                      icon={getMarkerIcon(category || 'Default')}
+                      icon={icon}
                       clusterer={clusterer}
                       onClick={() => {
                         setSelectedPlace(item);
@@ -477,6 +551,13 @@ export default function Index() {
                   <p className="text-xs text-gray-500 truncate flex items-center gap-1">
                     {selectedPlace.category} <span className="text-gray-300">•</span> {selectedPlace.address}
                   </p>
+                )}
+
+                {/* AVISO DE FECHADO: Movido para baixo do texto principal, visível e limpo */}
+                {!(selectedPlace.type === 'product' ? checkIsOpen(selectedPlace.market?.opening_hours) : checkIsOpen(selectedPlace.opening_hours)) && (
+                  <div className="mt-1 flex items-center gap-1 text-red-600 font-bold text-xs bg-red-50 w-fit px-2 py-0.5 rounded border border-red-100 animate-in fade-in">
+                    <Clock className="w-3 h-3" /> Fechado Agora
+                  </div>
                 )}
               </div>
 

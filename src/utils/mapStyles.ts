@@ -38,11 +38,13 @@ const ICONS_PATH: Record<string, string> = {
     Default: "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"
 };
 
-export const getMarkerIcon = (category: string) => {
-    const color = CATEGORY_COLORS[category] || CATEGORY_COLORS.Default;
+// MODIFICADO: Aceita isOpen para definir a cor
+export const getMarkerIcon = (category: string, isOpen: boolean = true) => {
+    // Se estiver aberto, usa a cor da categoria. Se fechado, usa Cinza Escuro (Slate-700)
+    const color = isOpen ? (CATEGORY_COLORS[category] || CATEGORY_COLORS.Default) : "#334155";
     const path = ICONS_PATH[category] || ICONS_PATH.Default;
 
-    // SVG Circular Moderno
+    // SVG Circular Moderno (Mantido idêntico, só mudamos a variável color acima)
     const svg = `
     <svg width="44" height="44" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg">
       <defs>
