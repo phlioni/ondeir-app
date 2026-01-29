@@ -388,15 +388,7 @@ export default function Index() {
           center={center}
           zoom={14}
           onLoad={onLoad}
-          // AQUI: gestureHandling: 'greedy' remove a necessidade de 2 dedos
-          options={{
-            disableDefaultUI: true,
-            zoomControl: false,
-            styles: mapStyles,
-            minZoom: 4,
-            maxZoom: 20,
-            gestureHandling: 'greedy'
-          }}
+          options={{ disableDefaultUI: true, zoomControl: false, styles: mapStyles, minZoom: 4, maxZoom: 20 }}
         >
           {userLocation && userLocation.lat && userLocation.lng && (
             <MarkerF position={userLocation} zIndex={999} icon={{ path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: "#3B82F6", fillOpacity: 1, strokeColor: "white", strokeWeight: 3 }} />
