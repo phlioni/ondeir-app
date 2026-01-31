@@ -10,6 +10,12 @@ import { ProductDrawer } from "@/components/ProductDrawer";
 import { CartFloatingBar } from "@/components/CartFloatingBar";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
+// Verifica se é UUID
+const isUUID = (str: string) => {
+    const regex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    return regex.test(str);
+};
+
 const checkIsOpen = (hours: any) => {
     if (!hours) return true;
     const days = ['domingo', 'segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado'];
@@ -27,7 +33,7 @@ const DAYS_TRANSLATION: any = {
 };
 
 export default function VenueDetail() {
-    const { id } = useParams();
+    const { id } = useParams(); // UUID ou Slug
     const navigate = useNavigate();
     const location = useLocation();
     const { toast } = useToast();
@@ -37,7 +43,6 @@ export default function VenueDetail() {
     const [reviews, setReviews] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
 
-    // Estado dinâmico de abertura
     const [isOpen, setIsOpen] = useState(false);
     const [ticker, setTicker] = useState(0);
 
@@ -48,7 +53,6 @@ export default function VenueDetail() {
         if (id) fetchVenueData(id);
     }, [id]);
 
-    // RELÓGIO DE VERIFICAÇÃO (1 min)
     useEffect(() => {
         const interval = setInterval(() => {
             setTicker(t => t + 1);
@@ -56,7 +60,6 @@ export default function VenueDetail() {
         return () => clearInterval(interval);
     }, []);
 
-    // Revalida status quando o relógio (ticker) muda
     useEffect(() => {
         if (venue) {
             setIsOpen(checkIsOpen(venue.opening_hours));
@@ -80,30 +83,41 @@ export default function VenueDetail() {
         }
     }, [menu, location.state, venue]);
 
-    const fetchVenueData = async (venueId: string) => {
+    const fetchVenueData = async (paramId: string) => {
         try {
-            // 1. Busca Restaurante
-            const { data: venueData, error: venueError } = await supabase
-                .from("markets")
-                .select("*, coin_balance")
-                .eq("id", venueId)
-                .single();
+            let query = supabase.from("markets").select("*, coin_balance");
+
+            // --- LÓGICA DE SLUG HÍBRIDA ---
+            if (isUUID(paramId)) {
+                query = query.eq("id", paramId);
+            } else {
+                // Limpa o slug caso venha com espaços da URL
+                const cleanSlug = decodeURIComponent(paramId).toLowerCase().trim().replace(/\s+/g, '-');
+                query = query.eq("slug", cleanSlug);
+            }
+
+            // CORREÇÃO: Usa .maybeSingle() para evitar erro 406 se não achar
+            const { data: venueData, error: venueError } = await query.maybeSingle();
 
             if (venueError) throw venueError;
+            if (!venueData) throw new Error("Restaurante não encontrado");
+
             setVenue(venueData);
             setIsOpen(checkIsOpen(venueData.opening_hours));
 
-            // 2. Busca Menu
+            const realVenueId = venueData.id;
+
+            // Busca Menu
             const { data: menuData, error: menuError } = await supabase
                 .from("menu_items")
                 .select("*")
-                .eq("market_id", venueId)
+                .eq("market_id", realVenueId)
                 .order("category", { ascending: true });
 
             if (menuError) throw menuError;
             setMenu(menuData || []);
 
-            // 3. Busca Avaliações (ATUALIZADO para incluir replies)
+            // Busca Reviews
             const { data: reviewsData, error: reviewsError } = await supabase
                 .from("reviews")
                 .select(`
@@ -113,12 +127,11 @@ export default function VenueDetail() {
                         id, content, created_at, user_id
                     )
                 `)
-                .eq("target_id", venueId)
+                .eq("target_id", realVenueId)
                 .eq("target_type", "restaurant")
                 .order("created_at", { ascending: false });
 
             if (!reviewsError && reviewsData) {
-                // Ordena as respostas por data (antigas primeiro)
                 const reviewsWithSortedReplies = reviewsData.map((r: any) => ({
                     ...r,
                     replies: r.replies?.sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) || []
@@ -128,8 +141,8 @@ export default function VenueDetail() {
 
         } catch (error) {
             console.error("Erro:", error);
-            toast({ title: "Erro", description: "Falha ao carregar detalhes.", variant: "destructive" });
-            navigate("/");
+            // Evita redirecionar imediatamente em dev para ver o erro, mas em prod é bom ter
+            toast({ title: "Erro", description: "Local não encontrado.", variant: "destructive" });
         } finally {
             setLoading(false);
         }
@@ -150,11 +163,16 @@ export default function VenueDetail() {
     };
 
     if (loading) return <div className="h-screen w-full flex items-center justify-center bg-gray-50"><span className="animate-pulse text-primary font-bold">Carregando...</span></div>;
-    if (!venue) return null;
+    if (!venue) return (
+        <div className="h-screen w-full flex flex-col items-center justify-center bg-gray-50 p-4 text-center">
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">Local não encontrado</h2>
+            <p className="text-gray-500 mb-6">O link pode estar incorreto ou a loja não existe mais.</p>
+            <Button onClick={() => navigate('/')} variant="outline">Voltar para o Início</Button>
+        </div>
+    );
 
     const showGamification = (venue.coin_balance || 0) > 0;
 
-    // Calcula nota se tiver reviews locais, senão usa a do banco
     const displayRating = reviews.length > 0
         ? (reviews.reduce((acc, r) => acc + r.rating, 0) / reviews.length).toFixed(1)
         : (venue.rating || 0).toFixed(1);
@@ -233,7 +251,6 @@ export default function VenueDetail() {
                     )}
                 </TabsContent>
 
-                {/* ABA AVALIAÇÕES */}
                 <TabsContent value="reviews" className="bg-white min-h-[50vh]">
                     {reviews.length === 0 ? (
                         <div className="flex flex-col items-center justify-center py-16 text-gray-400">
@@ -250,7 +267,6 @@ export default function VenueDetail() {
                                         <AvatarFallback><User className="w-5 h-5 text-gray-400" /></AvatarFallback>
                                     </Avatar>
                                     <div className="flex-1 space-y-2">
-                                        {/* Cabeçalho da Review */}
                                         <div className="flex justify-between items-start">
                                             <span className="font-bold text-gray-900 text-sm">{review.profiles?.display_name || "Usuário"}</span>
                                             <span className="text-xs text-gray-400">{new Date(review.created_at).toLocaleDateString('pt-BR')}</span>
@@ -278,7 +294,6 @@ export default function VenueDetail() {
                                             </div>
                                         )}
 
-                                        {/* THREAD DE RESPOSTAS */}
                                         {review.replies && review.replies.length > 0 && (
                                             <div className="mt-4 pl-3 border-l-2 border-gray-100 space-y-3">
                                                 {review.replies.map((reply: any) => {
