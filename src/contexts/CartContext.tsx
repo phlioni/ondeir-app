@@ -8,13 +8,14 @@ export interface CartItem {
     quantity: number;
     notes?: string;
     image_url?: string;
-    cartItemId: string; // ID único na sacola (ex: 2 Hamburgueres iguais com obs diferentes)
+    cartItemId: string; // ID único na sacola
 }
 
 interface CartContextType {
     items: CartItem[];
     addItem: (item: Omit<CartItem, "cartItemId">) => void;
     removeItem: (cartItemId: string) => void;
+    updateQuantity: (cartItemId: string, quantity: number) => void; // <--- NOVA FUNÇÃO
     clearCart: () => void;
     marketId: string | null;
     total: number;
@@ -70,6 +71,19 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         });
     };
 
+    // --- NOVA FUNÇÃO IMPLEMENTADA ---
+    const updateQuantity = (cartItemId: string, quantity: number) => {
+        if (quantity < 1) {
+            removeItem(cartItemId);
+            return;
+        }
+        setItems((prev) =>
+            prev.map((item) =>
+                item.cartItemId === cartItemId ? { ...item, quantity } : item
+            )
+        );
+    };
+
     const clearCart = () => {
         setItems([]);
         setMarketId(null);
@@ -79,7 +93,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     const itemCount = items.reduce((acc, item) => acc + item.quantity, 0);
 
     return (
-        <CartContext.Provider value={{ items, addItem, removeItem, clearCart, marketId, total, itemCount }}>
+        <CartContext.Provider value={{ items, addItem, removeItem, updateQuantity, clearCart, marketId, total, itemCount }}>
             {children}
         </CartContext.Provider>
     );

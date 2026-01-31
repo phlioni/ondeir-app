@@ -3,82 +3,219 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, ArrowLeft } from "lucide-react";
+import { Loader2, Lock, Mail, ArrowLeft } from "lucide-react";
 
 export default function Auth() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [isLogin, setIsLogin] = useState(true);
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
-  const [loading, setLoading] = useState(false);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [isSignUp, setIsSignUp] = useState(false);
 
-  // Verifica se devemos voltar para alguma página (ex: /checkout)
-  const from = location.state?.from?.pathname || "/";
+  // Captura o destino original (ex: /checkout) vindo do state da navegação
+  const fromState = location.state?.from?.pathname;
+
+  // Se houver um destino, salva no localStorage para sobreviver ao refresh do Google
+  useEffect(() => {
+    if (fromState) {
+      localStorage.setItem('auth_return_path', fromState);
+    }
+  }, [fromState]);
 
   useEffect(() => {
-    // Se já estiver logado, redireciona
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) navigate(from, { replace: true });
-    });
-  }, [navigate, from]);
+    const checkUser = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        checkRoleAndRedirect(session.user.id);
+      }
+    };
+    checkUser();
+  }, []);
+
+  const checkRoleAndRedirect = async (userId: string) => {
+    // 1. Recupera o destino prioritário (Local Storage ou State)
+    const storedPath = localStorage.getItem('auth_return_path');
+    const returnPath = storedPath || fromState || "/";
+
+    // Limpa o storage para não afetar navegações futuras
+    localStorage.removeItem('auth_return_path');
+
+    // --- CORREÇÃO PRINCIPAL ---
+    // Se existe um destino específico (diferente da home), vá para ele!
+    // Isso garante que quem estava no Checkout volte para o Checkout, mesmo se for Admin.
+    if (returnPath !== "/" && returnPath !== "/auth") {
+      navigate(returnPath, { replace: true });
+      return;
+    }
+
+    // Se não tinha destino (login espontâneo), aí sim aplicamos a regra de roles
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("id", userId)
+      .single();
+
+    if (profile?.role === "partner" || profile?.role === "admin") {
+      navigate("/dashboard");
+    } else {
+      navigate("/");
+    }
+  };
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
 
     try {
-      if (isSignUp) {
-        const { error } = await supabase.auth.signUp({ email, password });
+      if (isLogin) {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
         if (error) throw error;
-        toast({ title: "Cadastro realizado!", description: "Você já pode fazer login." });
-        setIsSignUp(false); // Alterna para login
+        if (data.user) await checkRoleAndRedirect(data.user.id);
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: { name: email.split("@")[0] },
+          },
+        });
+
         if (error) throw error;
-        toast({ title: "Bem-vindo de volta!" });
-        navigate(from, { replace: true }); // <--- A MÁGICA: Volta pro Checkout
+
+        if (data.session) {
+          toast({ title: "Cadastro realizado!", description: "Bem-vindo ao Onde Ir." });
+          await checkRoleAndRedirect(data.user!.id);
+        } else {
+          toast({
+            title: "Verifique seu e-mail",
+            description: "Enviamos um link de confirmação para ativar sua conta.",
+          });
+        }
       }
     } catch (error: any) {
-      toast({ title: "Erro", description: error.message, variant: "destructive" });
+      toast({
+        title: "Erro",
+        description: error.message,
+        variant: "destructive",
+      });
     } finally {
       setLoading(false);
     }
   };
 
+  const handleGoogleLogin = async () => {
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          // Redireciona para /auth para que o useEffect capture a sessão e rode o checkRoleAndRedirect
+          redirectTo: `${window.location.origin}/auth`,
+        },
+      });
+      if (error) throw error;
+    } catch (error: any) {
+      toast({
+        title: "Erro no Login Google",
+        description: error.message,
+        variant: "destructive",
+      });
+      setLoading(false);
+    }
+  };
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
       <Card className="w-full max-w-md shadow-xl border-0">
-        <CardHeader>
-          <Button variant="ghost" size="sm" className="w-fit mb-2 -ml-2" onClick={() => navigate(-1)}>
-            <ArrowLeft className="w-4 h-4 mr-2" /> Voltar
-          </Button>
-          <CardTitle className="text-2xl">{isSignUp ? "Criar Conta" : "Fazer Login"}</CardTitle>
+        <CardHeader className="text-center pb-2">
+          <div className="flex justify-start w-full mb-2">
+            <Button variant="ghost" size="sm" className="-ml-4 h-8 text-gray-500" onClick={() => navigate("/")}>
+              <ArrowLeft className="w-4 h-4 mr-1" /> Voltar
+            </Button>
+          </div>
+          <CardTitle className="text-2xl font-bold text-primary">Onde Ir?</CardTitle>
           <CardDescription>
-            {isSignUp ? "Preencha seus dados para começar." : "Entre para finalizar seu pedido e acompanhar a entrega."}
+            {isLogin ? "Entre para descobrir lugares incríveis" : "Crie sua conta gratuitamente"}
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+
+          <Button
+            variant="outline"
+            className="w-full h-12 gap-2 border-gray-300 font-medium text-gray-700 hover:bg-gray-50 bg-white"
+            onClick={handleGoogleLogin}
+            disabled={loading}
+          >
+            {loading ? (
+              <Loader2 className="animate-spin h-5 w-5" />
+            ) : (
+              <svg className="h-5 w-5" viewBox="0 0 24 24">
+                <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
+                <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
+                <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.84z" fill="#FBBC05" />
+                <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" />
+              </svg>
+            )}
+            Entrar com Google
+          </Button>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t border-gray-200" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-white px-2 text-gray-500">Ou use seu email</span>
+            </div>
+          </div>
+
           <form onSubmit={handleAuth} className="space-y-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">Email</label>
-              <Input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="seu@email.com" />
+              <div className="relative">
+                <Mail className="absolute left-3 top-3 h-5 w-5 text-gray-400" />
+                <Input
+                  type="email"
+                  placeholder="Seu email"
+                  className="pl-10 h-12"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+              </div>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Senha</label>
-              <Input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
+              <div className="relative">
+                <Lock className="absolute left-3 top-3 h-5 w-5 text-gray-400" />
+                <Input
+                  type="password"
+                  placeholder="Sua senha"
+                  className="pl-10 h-12"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+              </div>
             </div>
-            <Button type="submit" className="w-full h-12 text-lg" disabled={loading}>
-              {loading ? <Loader2 className="animate-spin" /> : (isSignUp ? "Cadastrar" : "Entrar")}
+
+            <Button type="submit" className="w-full h-12 text-lg font-bold" disabled={loading}>
+              {loading && email ? <Loader2 className="animate-spin" /> : (isLogin ? "Entrar" : "Cadastrar")}
             </Button>
           </form>
-          <div className="mt-4 text-center text-sm">
-            <button onClick={() => setIsSignUp(!isSignUp)} className="text-primary hover:underline">
-              {isSignUp ? "Já tem conta? Fazer Login" : "Não tem conta? Cadastre-se"}
-            </button>
+
+          <div className="mt-6 text-center">
+            <Button
+              variant="link"
+              onClick={() => setIsLogin(!isLogin)}
+              className="text-primary"
+            >
+              {isLogin ? "Não tem conta? Crie agora" : "Já tem conta? Faça login"}
+            </Button>
           </div>
         </CardContent>
       </Card>

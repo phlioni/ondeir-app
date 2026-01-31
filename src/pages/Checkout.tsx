@@ -8,14 +8,15 @@ import { Card, CardContent } from "@/components/ui/card";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, MapPin, Wallet, Bike, Store, Loader2, Plus, Clock, Coins } from "lucide-react";
+import { ArrowLeft, MapPin, Wallet, Bike, Store, Loader2, Plus, Clock, Coins, User, Trash2, ShoppingBag, Minus } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 
 export default function Checkout() {
-    const { items, total: cartSubtotal, marketId, clearCart } = useCart();
+    // Adicionei updateQuantity e removeItem aqui
+    const { items, total: cartSubtotal, marketId, clearCart, removeItem, updateQuantity } = useCart();
     const navigate = useNavigate();
     const location = useLocation();
     const { toast } = useToast();
@@ -24,6 +25,9 @@ export default function Checkout() {
     const [loading, setLoading] = useState(true);
     const [submitting, setSubmitting] = useState(false);
     const [marketConfig, setMarketConfig] = useState<any>(null);
+
+    // Dados do Cliente
+    const [customerName, setCustomerName] = useState("");
 
     // Coins Logic
     const [userCoins, setUserCoins] = useState(0);
@@ -49,6 +53,15 @@ export default function Checkout() {
                 return;
             }
             setUser(session.user);
+
+            // Pega o nome do Google nos metadados
+            const metadata = session.user.user_metadata;
+            const googleName = metadata?.full_name || metadata?.name || metadata?.given_name || session.user.email?.split('@')[0];
+
+            if (googleName) {
+                setCustomerName(googleName);
+            }
+
             fetchUserData(session.user.id);
             fetchMarketConfig();
         };
@@ -74,7 +87,6 @@ export default function Checkout() {
 
     const fetchMarketConfig = async () => {
         if (!marketId) return;
-        // AGORA BUSCAMOS O COIN_BALANCE DO RESTAURANTE
         const { data } = await supabase.from('markets').select('delivery_fee, delivery_time_min, delivery_time_max, coin_balance').eq('id', marketId).single();
         if (data) setMarketConfig(data);
     };
@@ -98,13 +110,17 @@ export default function Checkout() {
         }
     };
 
+    const handleClearCart = () => {
+        if (window.confirm("Tem certeza que deseja esvaziar sua sacola?")) {
+            clearCart();
+        }
+    };
+
     // Cálculos Financeiros
     const currentFee = orderType === 'delivery' ? (marketConfig?.delivery_fee || 0) : 0;
     const coinValue = 0.05;
     const maxDiscount = cartSubtotal;
     const maxCoinsAllowed = Math.floor(maxDiscount / coinValue);
-
-    // Regra de Negócio: O restaurante precisa ter saldo > 0 para aceitar coins
     const marketAcceptsCoins = (marketConfig?.coin_balance || 0) > 0;
 
     useEffect(() => {
@@ -123,9 +139,14 @@ export default function Checkout() {
             return toast({ title: "Selecione um endereço", variant: "destructive" });
         }
 
+        if (!customerName.trim()) {
+            return toast({ title: "Por favor, informe seu nome", variant: "destructive" });
+        }
+
         setSubmitting(true);
         try {
             const addr = savedAddresses.find(a => a.id === selectedAddressId) || {};
+            const finalName = customerName.trim() || "Cliente App";
 
             let orderId;
 
@@ -146,12 +167,16 @@ export default function Checkout() {
                 if (error) throw error;
                 orderId = data;
 
+                if (orderId) {
+                    await supabase.from('orders').update({ customer_name: finalName }).eq('id', orderId);
+                }
+
             } else {
                 // ROTA B: Padrão (Sem Coins)
                 const { data: order, error: orderError } = await supabase.from("orders").insert({
                     market_id: marketId,
                     user_id: user.id,
-                    customer_name: user.email?.split('@')[0],
+                    customer_name: finalName,
                     customer_phone: "",
                     order_type: orderType,
                     status: "pending",
@@ -175,20 +200,20 @@ export default function Checkout() {
             }
 
             if (orderId) {
-                const orderItems = items.map(item => ({
-                    order_id: orderId,
-                    market_id: marketId,
-                    menu_item_id: item.id,
-                    name: item.name,
-                    quantity: item.quantity,
-                    unit_price: item.price,
-                    total_price: item.price * item.quantity,
-                    notes: item.notes
-                }));
+                if (!useCoins || coinsToUse === 0) {
+                    const orderItems = items.map(item => ({
+                        order_id: orderId,
+                        market_id: marketId,
+                        menu_item_id: item.id,
+                        name: item.name,
+                        quantity: item.quantity,
+                        unit_price: item.price,
+                        total_price: item.price * item.quantity,
+                        notes: item.notes
+                    }));
 
-                const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
-                if (itemsError) {
-                    console.error("Erro ao inserir itens, mas pedido criado:", itemsError);
+                    const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
+                    if (itemsError) console.error("Erro itens:", itemsError);
                 }
             }
 
@@ -208,12 +233,75 @@ export default function Checkout() {
 
     return (
         <div className="min-h-screen bg-gray-50 pb-32 font-sans">
-            <div className="bg-white p-4 sticky top-0 z-10 border-b flex items-center gap-4">
-                <Button variant="ghost" size="icon" onClick={() => navigate(-1)}><ArrowLeft className="w-5 h-5" /></Button>
-                <h1 className="text-lg font-bold">Finalizar Pedido</h1>
+            <div className="bg-white p-4 sticky top-0 z-10 border-b flex items-center justify-between shadow-sm">
+                <div className="flex items-center gap-3">
+                    <Button variant="ghost" size="icon" onClick={() => navigate(-1)} className="-ml-2"><ArrowLeft className="w-5 h-5" /></Button>
+                    <h1 className="text-lg font-bold text-gray-800">Finalizar Pedido</h1>
+                </div>
+                {/* BOTÃO ESVAZIAR CARRINHO */}
+                {items.length > 0 && (
+                    <Button variant="ghost" size="icon" className="text-red-500 hover:bg-red-50 hover:text-red-600" onClick={handleClearCart}>
+                        <Trash2 className="w-5 h-5" />
+                    </Button>
+                )}
             </div>
 
             <div className="p-4 space-y-6 max-w-lg mx-auto">
+
+                {/* --- RESUMO DO PEDIDO E EDIÇÃO --- */}
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 space-y-4">
+                    <h2 className="text-sm font-bold text-gray-500 uppercase flex items-center gap-2">
+                        <ShoppingBag className="w-4 h-4" /> Resumo do Pedido
+                    </h2>
+                    <div className="space-y-3">
+                        {items.map((item) => (
+                            <div key={item.cartItemId} className="flex justify-between items-start pb-3 border-b border-gray-50 last:border-0 last:pb-0">
+                                <div className="flex-1 pr-2">
+                                    <div className="flex items-center gap-2">
+                                        <span className="font-bold text-gray-700 text-sm">{item.quantity}x</span>
+                                        <span className="text-sm text-gray-900 font-medium line-clamp-1">{item.name}</span>
+                                    </div>
+                                    {item.notes && <p className="text-xs text-gray-400 mt-1 line-clamp-2">Obs: {item.notes}</p>}
+                                </div>
+                                <div className="flex flex-col items-end gap-2">
+                                    <span className="text-sm font-bold text-gray-900">R$ {(item.price * item.quantity).toFixed(2)}</span>
+                                    <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1 h-8">
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-6 w-6 rounded-md hover:bg-white"
+                                            // Lógica: Se for 1 e clicar -, remove. Senão, diminui.
+                                            onClick={() => item.quantity > 1 ? updateQuantity(item.cartItemId, item.quantity - 1) : removeItem(item.cartItemId)}
+                                        >
+                                            <Minus className="w-3 h-3 text-gray-600" />
+                                        </Button>
+                                        <span className="text-xs font-bold w-4 text-center">{item.quantity}</span>
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-6 w-6 rounded-md hover:bg-white"
+                                            onClick={() => updateQuantity(item.cartItemId, item.quantity + 1)}
+                                        >
+                                            <Plus className="w-3 h-3 text-gray-600" />
+                                        </Button>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* DADOS PESSOAIS */}
+                <div className="space-y-3">
+                    <h2 className="text-sm font-bold text-gray-500 uppercase flex items-center gap-2"><User className="w-4 h-4" /> Quem vai receber?</h2>
+                    <Input
+                        placeholder="Nome completo"
+                        value={customerName}
+                        onChange={e => setCustomerName(e.target.value)}
+                        className="bg-white border-gray-200"
+                    />
+                </div>
+
                 <Tabs defaultValue="delivery" onValueChange={setOrderType} className="w-full">
                     <TabsList className="w-full grid grid-cols-2 mb-3">
                         <TabsTrigger value="delivery"><Bike className="w-4 h-4 mr-2" /> Delivery</TabsTrigger>
@@ -234,7 +322,7 @@ export default function Checkout() {
                             </div>
                         ))}
                         <Dialog open={isAddressModalOpen} onOpenChange={setIsAddressModalOpen}>
-                            <DialogTrigger asChild><Button variant="outline" className="w-full border-dashed border-2 h-12 text-gray-500"><Plus className="w-4 h-4 mr-2" /> Novo Endereço</Button></DialogTrigger>
+                            <DialogTrigger asChild><Button variant="outline" className="w-full border-dashed border-2 h-12 text-gray-500 bg-white"><Plus className="w-4 h-4 mr-2" /> Novo Endereço</Button></DialogTrigger>
                             <DialogContent>
                                 <DialogHeader><DialogTitle>Adicionar Endereço</DialogTitle></DialogHeader>
                                 <div className="space-y-3 py-2">
@@ -253,7 +341,7 @@ export default function Checkout() {
                     </TabsContent>
                 </Tabs>
 
-                {/* SEÇÃO DE COINS - SÓ APARECE SE USER TEM SALDO E RESTAURANTE TEM SALDO */}
+                {/* SEÇÃO DE COINS */}
                 {userCoins > 0 && marketAcceptsCoins && (
                     <section className="space-y-3">
                         <div className="flex items-center justify-between">
@@ -297,10 +385,10 @@ export default function Checkout() {
                             <RadioGroup value={paymentMethod} onValueChange={setPaymentMethod} className="space-y-3">
                                 {finalTotal > 0 ? (
                                     <>
-                                        <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="credit" id="r1" /><Label htmlFor="r1" className="cursor-pointer flex-1">Crédito (Entrega)</Label></div>
-                                        <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="debit" id="r2" /><Label htmlFor="r2" className="cursor-pointer flex-1">Débito (Entrega)</Label></div>
-                                        <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="pix" id="r3" /><Label htmlFor="r3" className="cursor-pointer flex-1">Pix (Entrega)</Label></div>
-                                        <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer"><RadioGroupItem value="cash" id="r4" /><Label htmlFor="r4" className="cursor-pointer flex-1">Dinheiro</Label></div>
+                                        <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer bg-white"><RadioGroupItem value="credit" id="r1" /><Label htmlFor="r1" className="cursor-pointer flex-1">Crédito (Entrega)</Label></div>
+                                        <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer bg-white"><RadioGroupItem value="debit" id="r2" /><Label htmlFor="r2" className="cursor-pointer flex-1">Débito (Entrega)</Label></div>
+                                        <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer bg-white"><RadioGroupItem value="pix" id="r3" /><Label htmlFor="r3" className="cursor-pointer flex-1">Pix (Entrega)</Label></div>
+                                        <div className="flex items-center space-x-2 border p-3 rounded-lg hover:bg-gray-50 cursor-pointer bg-white"><RadioGroupItem value="cash" id="r4" /><Label htmlFor="r4" className="cursor-pointer flex-1">Dinheiro</Label></div>
                                     </>
                                 ) : (
                                     <div className="text-center text-green-600 font-bold py-2 bg-green-50 rounded-lg">
@@ -308,7 +396,7 @@ export default function Checkout() {
                                     </div>
                                 )}
                             </RadioGroup>
-                            {paymentMethod === 'cash' && finalTotal > 0 && (<div className="mt-3"><Label>Troco para quanto?</Label><Input type="number" placeholder="Ex: 50" value={changeFor} onChange={e => setChangeFor(e.target.value)} className="mt-1" /></div>)}
+                            {paymentMethod === 'cash' && finalTotal > 0 && (<div className="mt-3"><Label>Troco para quanto?</Label><Input type="number" placeholder="Ex: 50" value={changeFor} onChange={e => setChangeFor(e.target.value)} className="mt-1 bg-white" /></div>)}
                         </CardContent>
                     </Card>
                 </section>
