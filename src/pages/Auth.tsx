@@ -16,17 +16,17 @@ export default function Auth() {
   const location = useLocation();
   const { toast } = useToast();
 
-  // Captura o destino original (ex: /checkout) vindo do state da navegação
   const fromState = location.state?.from?.pathname;
 
-  // Se houver um destino, salva no localStorage para sobreviver ao refresh do Google
   useEffect(() => {
     if (fromState) {
       localStorage.setItem('auth_return_path', fromState);
     }
   }, [fromState]);
 
+  // --- MUDANÇA AQUI ---
   useEffect(() => {
+    // 1. Verifica se já existe sessão ativa ao carregar
     const checkUser = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
@@ -34,25 +34,30 @@ export default function Auth() {
       }
     };
     checkUser();
+
+    // 2. Cria um ouvinte para quando o login do Google completar (o tal "hash" na URL)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === "SIGNED_IN" && session) {
+        await checkRoleAndRedirect(session.user.id);
+      }
+    });
+
+    // Limpa o ouvinte quando sair da tela
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   const checkRoleAndRedirect = async (userId: string) => {
-    // 1. Recupera o destino prioritário (Local Storage ou State)
     const storedPath = localStorage.getItem('auth_return_path');
     const returnPath = storedPath || fromState || "/";
-
-    // Limpa o storage para não afetar navegações futuras
     localStorage.removeItem('auth_return_path');
 
-    // --- CORREÇÃO PRINCIPAL ---
-    // Se existe um destino específico (diferente da home), vá para ele!
-    // Isso garante que quem estava no Checkout volte para o Checkout, mesmo se for Admin.
     if (returnPath !== "/" && returnPath !== "/auth") {
       navigate(returnPath, { replace: true });
       return;
     }
 
-    // Se não tinha destino (login espontâneo), aí sim aplicamos a regra de roles
     const { data: profile } = await supabase
       .from("profiles")
       .select("role")
@@ -77,7 +82,8 @@ export default function Auth() {
           password,
         });
         if (error) throw error;
-        if (data.user) await checkRoleAndRedirect(data.user.id);
+        // Não precisa chamar checkRoleAndRedirect aqui manualmente, 
+        // pois o onAuthStateChange lá em cima vai pegar o evento SIGNED_IN
       } else {
         const { data, error } = await supabase.auth.signUp({
           email,
@@ -91,7 +97,7 @@ export default function Auth() {
 
         if (data.session) {
           toast({ title: "Cadastro realizado!", description: "Bem-vindo ao Flippi." });
-          await checkRoleAndRedirect(data.user!.id);
+          // O Listener vai cuidar do redirect
         } else {
           toast({
             title: "Verifique seu e-mail",
@@ -116,7 +122,7 @@ export default function Auth() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          // Redireciona para /auth para que o useEffect capture a sessão e rode o checkRoleAndRedirect
+          // Garante que volte para a página de Auth para processar o login
           redirectTo: `${window.location.origin}/auth`,
         },
       });
