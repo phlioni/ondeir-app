@@ -63,7 +63,7 @@ export function DeliveryReviewModal({ isOpen, onClose, orderId, courierId, couri
                 // Última etapa (Plataforma) - Apenas finaliza
                 toast({
                     title: "Avaliação enviada!",
-                    description: "Obrigado por ajudar a melhorar o Ondeir.",
+                    description: "Obrigado por ajudar a melhorar o Flippi.",
                     className: "bg-green-50 border-green-200"
                 });
                 onClose();
