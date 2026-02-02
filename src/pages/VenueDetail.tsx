@@ -69,6 +69,8 @@ export default function VenueDetail() {
     useEffect(() => {
         if (menu.length > 0 && location.state?.openProductId) {
             const productToOpen = menu.find(item => item.id === location.state.openProductId);
+
+            // Só abre se o produto existir na lista (ou seja, se for active=true)
             if (productToOpen) {
                 if (!checkIsOpen(venue?.opening_hours)) {
                     toast({ title: "Restaurante Fechado", description: "Não é possível realizar pedidos agora.", variant: "destructive" });
@@ -107,11 +109,12 @@ export default function VenueDetail() {
 
             const realVenueId = venueData.id;
 
-            // Busca Menu
+            // --- BUSCA MENU COM FILTRO DE ATIVOS (SOFT DELETE) ---
             const { data: menuData, error: menuError } = await supabase
                 .from("menu_items")
                 .select("*")
                 .eq("market_id", realVenueId)
+                .eq("active", true) // <--- O PULO DO GATO
                 .order("category", { ascending: true });
 
             if (menuError) throw menuError;

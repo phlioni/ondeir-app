@@ -24,50 +24,60 @@ export default function Auth() {
     }
   }, [fromState]);
 
-  // --- MUDANÇA AQUI ---
   useEffect(() => {
-    // 1. Verifica se já existe sessão ativa ao carregar
     const checkUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        checkRoleAndRedirect(session.user.id);
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        if (session) {
+          checkRoleAndRedirect(session.user.id);
+        }
+      } catch (error) {
+        console.log("Sessão inválida, limpando...");
+        await supabase.auth.signOut();
       }
     };
     checkUser();
 
-    // 2. Cria um ouvinte para quando o login do Google completar (o tal "hash" na URL)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === "SIGNED_IN" && session) {
         await checkRoleAndRedirect(session.user.id);
       }
     });
 
-    // Limpa o ouvinte quando sair da tela
     return () => {
       subscription.unsubscribe();
     };
   }, []);
 
   const checkRoleAndRedirect = async (userId: string) => {
-    const storedPath = localStorage.getItem('auth_return_path');
-    const returnPath = storedPath || fromState || "/";
-    localStorage.removeItem('auth_return_path');
-
-    if (returnPath !== "/" && returnPath !== "/auth") {
-      navigate(returnPath, { replace: true });
-      return;
-    }
-
     const { data: profile } = await supabase
       .from("profiles")
       .select("role")
       .eq("id", userId)
       .single();
 
+    // REGRA DE OURO: App é para usuários comuns.
+    // Se for Partner ou Admin, bloqueia o acesso e manda usar a plataforma.
     if (profile?.role === "partner" || profile?.role === "admin") {
-      navigate("/dashboard");
+      await supabase.auth.signOut();
+      toast({
+        title: "Conta Corporativa",
+        description: "Esta conta é administrativa. Use a plataforma de gestão, ou crie uma conta pessoal para fazer pedidos.",
+        variant: "destructive"
+      });
+      setLoading(false);
     } else {
-      navigate("/");
+      // É um usuário normal, libera o acesso
+      const storedPath = localStorage.getItem('auth_return_path');
+      const returnPath = storedPath || fromState || "/";
+      localStorage.removeItem('auth_return_path');
+
+      if (returnPath !== "/auth") {
+        navigate(returnPath, { replace: true });
+      } else {
+        navigate("/");
+      }
     }
   };
 
@@ -77,13 +87,11 @@ export default function Auth() {
 
     try {
       if (isLogin) {
-        const { data, error } = await supabase.auth.signInWithPassword({
+        const { error } = await supabase.auth.signInWithPassword({
           email,
           password,
         });
         if (error) throw error;
-        // Não precisa chamar checkRoleAndRedirect aqui manualmente, 
-        // pois o onAuthStateChange lá em cima vai pegar o evento SIGNED_IN
       } else {
         const { data, error } = await supabase.auth.signUp({
           email,
@@ -97,7 +105,6 @@ export default function Auth() {
 
         if (data.session) {
           toast({ title: "Cadastro realizado!", description: "Bem-vindo ao Flippi." });
-          // O Listener vai cuidar do redirect
         } else {
           toast({
             title: "Verifique seu e-mail",
@@ -111,7 +118,6 @@ export default function Auth() {
         description: error.message,
         variant: "destructive",
       });
-    } finally {
       setLoading(false);
     }
   };
@@ -122,7 +128,6 @@ export default function Auth() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          // Garante que volte para a página de Auth para processar o login
           redirectTo: `${window.location.origin}/auth`,
         },
       });

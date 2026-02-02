@@ -36,12 +36,18 @@ const SEARCH_PHRASES = [
   "☕ Café para trabalhar?", "🍣 Rodízio japonês?", "🍦 Açaí gelado?"
 ];
 
+// --- FILTROS ATUALIZADOS PARA TODAS AS CATEGORIAS ---
 const QUICK_FILTERS = [
   { label: "Todos", value: "all" },
-  { label: "🍔 Lanches", value: "Restaurante" },
+  { label: "🍽️ Restaurantes", value: "Restaurante" },
+  { label: "🍔 Lanchonetes", value: "Lanchonete" },
+  { label: "🍕 Pizzarias", value: "Pizzaria" },
   { label: "🍻 Bares", value: "Bar" },
-  { label: "🎵 Baladas", value: "Balada" },
-  { label: "☕ Cafés", value: "Café" },
+  { label: "☕ Cafeterias", value: "Cafeteria" },
+  { label: "🧁 Docerias", value: "Doceria" },
+  { label: "🍦 Sorveterias", value: "Sorveteria" },
+  { label: "🍷 Adegas", value: "Adega" },
+  { label: "🌴 Quiosques", value: "Quiosque" },
 ];
 
 const checkIsOpen = (hours: any) => {
