@@ -324,7 +324,8 @@ export default function Index() {
   if (!isLoaded) return <div className="h-screen w-full flex items-center justify-center bg-gray-100"><span className="animate-pulse text-primary font-bold">Carregando...</span></div>;
 
   return (
-    <div className="relative h-screen w-full overflow-hidden flex flex-col bg-background font-sans">
+    // AJUSTE REALIZADO AQUI: fixed inset-0, h-[100dvh], touch-none e overscroll-none
+    <div className="fixed inset-0 h-[100dvh] w-full overflow-hidden flex flex-col bg-background font-sans overscroll-none touch-none">
       <div className="absolute top-0 left-0 right-0 z-30 p-4 bg-white/95 backdrop-blur-md shadow-sm pointer-events-none">
         <div className="flex justify-between items-start pointer-events-auto">
           <div className="flex gap-2">
