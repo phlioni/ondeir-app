@@ -15,7 +15,6 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 
 export default function Checkout() {
-    // Adicionei updateQuantity e removeItem aqui
     const { items, total: cartSubtotal, marketId, clearCart, removeItem, updateQuantity } = useCart();
     const navigate = useNavigate();
     const location = useLocation();
@@ -28,6 +27,7 @@ export default function Checkout() {
 
     // Dados do Cliente
     const [customerName, setCustomerName] = useState("");
+    const [customerPhone, setCustomerPhone] = useState(""); // Novo estado para garantir o telefone
 
     // Coins Logic
     const [userCoins, setUserCoins] = useState(0);
@@ -54,13 +54,10 @@ export default function Checkout() {
             }
             setUser(session.user);
 
-            // Pega o nome do Google nos metadados
+            // Tenta pegar nome do metadado do auth
             const metadata = session.user.user_metadata;
             const googleName = metadata?.full_name || metadata?.name || metadata?.given_name || session.user.email?.split('@')[0];
-
-            if (googleName) {
-                setCustomerName(googleName);
-            }
+            if (googleName) setCustomerName(googleName);
 
             fetchUserData(session.user.id);
             fetchMarketConfig();
@@ -73,14 +70,24 @@ export default function Checkout() {
     }, [items, navigate]);
 
     const fetchUserData = async (userId: string) => {
+        // 1. Busca Endereços
         const { data: addrData } = await supabase.from('user_addresses').select('*').eq('user_id', userId).order('created_at', { ascending: false });
         if (addrData && addrData.length > 0) {
             setSavedAddresses(addrData);
             setSelectedAddressId(addrData[0].id);
         }
 
-        const { data: profile } = await supabase.from('profiles').select('coin_balance').eq('id', userId).single();
-        if (profile) setUserCoins(profile.coin_balance || 0);
+        // 2. Busca Perfil (Coins e Telefone)
+        // Atenção: Verifica se a coluna chama 'phone' ou 'phone_number' no seu banco. Usei 'phone_number' conforme seu schema.
+        const { data: profile } = await supabase.from('profiles').select('coin_balance, phone_number, full_name').eq('id', userId).single();
+
+        if (profile) {
+            setUserCoins(profile.coin_balance || 0);
+            // Se tiver telefone no perfil, já preenche o estado para envio
+            if (profile.phone_number) setCustomerPhone(profile.phone_number);
+            // Se o nome do auth falhou, tenta do perfil
+            if (!customerName && profile.full_name) setCustomerName(profile.full_name);
+        }
 
         setLoading(false);
     };
@@ -148,9 +155,12 @@ export default function Checkout() {
             const addr = savedAddresses.find(a => a.id === selectedAddressId) || {};
             const finalName = customerName.trim() || "Cliente App";
 
+            // Garante que o telefone vá no JSON de endereço também por segurança
+            const addressDataWithPhone = { ...addr, phone: customerPhone };
+
             let orderId;
 
-            // ROTA A: Com uso de Coins (RPC)
+            // CENÁRIO 1: Pagamento com Coins (RPC)
             if (useCoins && coinsToUse > 0) {
                 const { data, error } = await supabase.rpc('create_order_with_coins', {
                     p_market_id: marketId,
@@ -159,7 +169,7 @@ export default function Checkout() {
                     p_subtotal: cartSubtotal,
                     p_delivery_fee: currentFee,
                     p_coins_to_use: coinsToUse,
-                    p_address_data: addr,
+                    p_address_data: addressDataWithPhone,
                     p_order_type: orderType,
                     p_payment_method: paymentMethod
                 });
@@ -167,17 +177,21 @@ export default function Checkout() {
                 if (error) throw error;
                 orderId = data;
 
+                // Atualiza dados extras que a RPC pode não ter coberto
                 if (orderId) {
-                    await supabase.from('orders').update({ customer_name: finalName }).eq('id', orderId);
+                    await supabase.from('orders').update({
+                        customer_name: finalName,
+                        customer_phone: customerPhone // Salva telefone explicitamente
+                    }).eq('id', orderId);
                 }
 
             } else {
-                // ROTA B: Padrão (Sem Coins)
+                // CENÁRIO 2: Pagamento Normal (Insert direto)
                 const { data: order, error: orderError } = await supabase.from("orders").insert({
                     market_id: marketId,
                     user_id: user.id,
                     customer_name: finalName,
-                    customer_phone: "",
+                    customer_phone: customerPhone, // AQUI: Envia o telefone recuperado do perfil
                     order_type: orderType,
                     status: "pending",
                     payment_status: "pending",
@@ -190,6 +204,7 @@ export default function Checkout() {
                     address_number: addr.number,
                     address_neighborhood: addr.neighborhood,
                     address_complement: addr.complement,
+                    address_data: addressDataWithPhone,
                     change_for: paymentMethod === 'cash' ? Number(changeFor) : null,
                     coins_used: 0,
                     discount_amount: 0
@@ -199,6 +214,7 @@ export default function Checkout() {
                 orderId = order.id;
             }
 
+            // Inserir Itens do Pedido
             if (orderId) {
                 if (!useCoins || coinsToUse === 0) {
                     const orderItems = items.map(item => ({
@@ -238,7 +254,6 @@ export default function Checkout() {
                     <Button variant="ghost" size="icon" onClick={() => navigate(-1)} className="-ml-2"><ArrowLeft className="w-5 h-5" /></Button>
                     <h1 className="text-lg font-bold text-gray-800">Finalizar Pedido</h1>
                 </div>
-                {/* BOTÃO ESVAZIAR CARRINHO */}
                 {items.length > 0 && (
                     <Button variant="ghost" size="icon" className="text-red-500 hover:bg-red-50 hover:text-red-600" onClick={handleClearCart}>
                         <Trash2 className="w-5 h-5" />
@@ -270,7 +285,6 @@ export default function Checkout() {
                                             variant="ghost"
                                             size="icon"
                                             className="h-6 w-6 rounded-md hover:bg-white"
-                                            // Lógica: Se for 1 e clicar -, remove. Senão, diminui.
                                             onClick={() => item.quantity > 1 ? updateQuantity(item.cartItemId, item.quantity - 1) : removeItem(item.cartItemId)}
                                         >
                                             <Minus className="w-3 h-3 text-gray-600" />
@@ -300,6 +314,7 @@ export default function Checkout() {
                         onChange={e => setCustomerName(e.target.value)}
                         className="bg-white border-gray-200"
                     />
+                    {/* Input de telefone removido visualmente pois já vem do perfil, mas o estado existe */}
                 </div>
 
                 <Tabs defaultValue="delivery" onValueChange={setOrderType} className="w-full">
