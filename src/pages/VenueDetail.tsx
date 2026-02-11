@@ -93,8 +93,16 @@ export default function VenueDetail() {
             if (isUUID(paramId)) {
                 query = query.eq("id", paramId);
             } else {
-                // Limpa o slug caso venha com espaços da URL
-                const cleanSlug = decodeURIComponent(paramId).toLowerCase().trim().replace(/\s+/g, '-');
+                // Sanitização RIGOROSA: Remove acentos e caracteres especiais para bater com o banco
+                const cleanSlug = decodeURIComponent(paramId)
+                    .toLowerCase()
+                    .trim()
+                    .normalize('NFD') // Separa acentos
+                    .replace(/[\u0300-\u036f]/g, "") // Remove acentos
+                    .replace(/[^a-z0-9-]/g, '-') // Substitui especiais por traço
+                    .replace(/-+/g, '-') // Remove traços duplicados
+                    .replace(/^-|-$/g, ''); // Remove traços do início/fim
+
                 query = query.eq("slug", cleanSlug);
             }
 
