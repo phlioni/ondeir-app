@@ -24,67 +24,76 @@ export default function Auth() {
     }
   }, [fromState]);
 
-  useEffect(() => {
-    const checkUser = async () => {
-      try {
-        const { data: { session }, error } = await supabase.auth.getSession();
-        if (error) throw error;
-        if (session) {
-          checkRoleAndRedirect(session.user.id);
-        }
-      } catch (error) {
-        console.log("Sessão inválida, limpando...");
-        await supabase.auth.signOut();
-      }
-    };
-    checkUser();
+  // Função isolada de verificação para ser reutilizada
+  const verifyAndRedirect = async (session: any) => {
+    if (!session?.user?.id) return;
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === "SIGNED_IN" && session) {
-        await checkRoleAndRedirect(session.user.id);
+    try {
+      // Tenta buscar o perfil
+      const { data: profile, error } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", session.user.id)
+        .maybeSingle(); // IMPORTANTE: maybeSingle evita o erro PGRST116
+
+      // Se der erro de conexão ou outro erro grave (não o de 'não encontrado')
+      if (error && error.code !== 'PGRST116') {
+        console.error("Erro ao verificar perfil:", error);
+        return; // Mantém o usuário na tela de auth por segurança
+      }
+
+      // Se não tiver perfil (profile === null), assumimos 'user' para não bloquear
+      const userRole = profile?.role || "user";
+
+      if (userRole === "partner" || userRole === "admin") {
+        await supabase.auth.signOut();
+        toast({
+          title: "Acesso Restrito",
+          description: "Login administrativo deve ser feito pelo painel de gestão.",
+          variant: "destructive"
+        });
+        setLoading(false);
+      } else {
+        // Redirecionamento de sucesso
+        const storedPath = localStorage.getItem('auth_return_path');
+        const returnPath = storedPath || fromState || "/";
+        localStorage.removeItem('auth_return_path');
+
+        // Pequeno delay para garantir que o estado do AuthProvider atualizou
+        setTimeout(() => {
+          navigate(returnPath === "/auth" ? "/" : returnPath, { replace: true });
+        }, 100);
+      }
+    } catch (err) {
+      // Se algo explodir, desloga o usuário para limpar o estado zumbi
+      console.error("Erro crítico no fluxo de auth:", err);
+      await supabase.auth.signOut();
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // 1. Verificar sessão inicial
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        verifyAndRedirect(session);
       }
     });
 
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, []);
-
-  const checkRoleAndRedirect = async (userId: string) => {
-    // CORREÇÃO AQUI: Mudamos de .single() para .maybeSingle()
-    // Isso evita o erro "JSON object" se o perfil ainda não existir no banco.
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", userId)
-      .maybeSingle();
-
-    // Se o profile for null (novo cadastro), assumimos role = 'user'
-    const userRole = profile?.role || "user";
-
-    // REGRA DE OURO: App é para usuários comuns.
-    // Se for Partner ou Admin, bloqueia o acesso e manda usar a plataforma.
-    if (userRole === "partner" || userRole === "admin") {
-      await supabase.auth.signOut();
-      toast({
-        title: "Conta Corporativa",
-        description: "Esta conta é administrativa. Use a plataforma de gestão, ou crie uma conta pessoal para fazer pedidos.",
-        variant: "destructive"
-      });
-      setLoading(false);
-    } else {
-      // É um usuário normal, libera o acesso
-      const storedPath = localStorage.getItem('auth_return_path');
-      const returnPath = storedPath || fromState || "/";
-      localStorage.removeItem('auth_return_path');
-
-      if (returnPath !== "/auth") {
-        navigate(returnPath, { replace: true });
-      } else {
-        navigate("/");
+    // 2. Ouvir mudanças de auth
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === "SIGNED_IN" && session) {
+        await verifyAndRedirect(session);
       }
-    }
-  };
+      if (event === "SIGNED_OUT") {
+        setLoading(false);
+        setEmail("");
+        setPassword("");
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [navigate]);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -97,6 +106,7 @@ export default function Auth() {
           password,
         });
         if (error) throw error;
+        // O redirecionamento acontece no onAuthStateChange
       } else {
         const { data, error } = await supabase.auth.signUp({
           email,
@@ -108,14 +118,14 @@ export default function Auth() {
 
         if (error) throw error;
 
-        if (data.session) {
-          toast({ title: "Cadastro realizado!", description: "Bem-vindo ao Flippi." });
-        } else {
+        if (!data.session) {
+          setLoading(false);
           toast({
             title: "Verifique seu e-mail",
-            description: "Enviamos um link de confirmação para ativar sua conta.",
+            description: "Enviamos um link de confirmação.",
           });
         }
+        // Se tiver sessão (login automático), o onAuthStateChange cuida do resto
       }
     } catch (error: any) {
       toast({
