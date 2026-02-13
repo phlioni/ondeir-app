@@ -51,15 +51,20 @@ export default function Auth() {
   }, []);
 
   const checkRoleAndRedirect = async (userId: string) => {
+    // CORREÇÃO AQUI: Mudamos de .single() para .maybeSingle()
+    // Isso evita o erro "JSON object" se o perfil ainda não existir no banco.
     const { data: profile } = await supabase
       .from("profiles")
       .select("role")
       .eq("id", userId)
-      .single();
+      .maybeSingle();
+
+    // Se o profile for null (novo cadastro), assumimos role = 'user'
+    const userRole = profile?.role || "user";
 
     // REGRA DE OURO: App é para usuários comuns.
     // Se for Partner ou Admin, bloqueia o acesso e manda usar a plataforma.
-    if (profile?.role === "partner" || profile?.role === "admin") {
+    if (userRole === "partner" || userRole === "admin") {
       await supabase.auth.signOut();
       toast({
         title: "Conta Corporativa",
